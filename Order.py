@@ -123,26 +123,3 @@ class OrderProcessingUI:
             "product_id": product_id,
             "quantity": quantity
         }
-
-        self.order_processor.receive_order(order)
-        self.order_processor.process_order()
-
-    def cancel_order(self):
-      
-        self.order_id_entry.delete(0, tk.END)
-        self.customer_name_entry.delete(0, tk.END)
-        self.product_id_entry.delete(0, tk.END)
-        self.quantity_entry.delete(0, tk.END)
-
-        
-        self.order_processor.order = None
-
-
-root = tk.Tk()
-root.title("Order Processing System")
-
-
-app = OrderProcessingUI(root)
-
-
-root.mainloop()

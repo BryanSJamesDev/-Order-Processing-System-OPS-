@@ -1,0 +1,27 @@
+import sqlite3
+
+def setup_database():
+    conn = sqlite3.connect('order_system.db')
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS products (
+            product_id TEXT PRIMARY KEY,
+            name TEXT,
+            price REAL,
+            stock INTEGER
+        )
+    ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS orders (
+            order_id TEXT PRIMARY KEY,
+            customer_name TEXT,
+            product_id TEXT,
+            quantity INTEGER,
+            status TEXT,
+            FOREIGN KEY(product_id) REFERENCES products(product_id)
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+setup_database()

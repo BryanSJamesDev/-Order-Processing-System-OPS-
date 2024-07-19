@@ -1,0 +1,62 @@
+class OrderProcessor:
+    def __init__(self, ui):
+        self.ui = ui  
+        self.db_path = 'order_system.db'
+
+    def connect_db(self):
+        return sqlite3.connect(self.db_path)
+
+    def receive_order(self, order):
+        conn = self.connect_db()
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT INTO orders (order_id, customer_name, product_id, quantity, status)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (order['order_id'], order['customer_name'], order['product_id'], order['quantity'], 'Pending'))
+        conn.commit()
+        conn.close()
+        self.ui.message_label.config(text="Order received.")
+
+    def is_order_valid(self, order):
+        return all(key in order for key in ["order_id", "customer_name", "product_id", "quantity"])
+
+    def check_inventory(self, order):
+        conn = self.connect_db()
+        cursor = conn.cursor()
+        cursor.execute("SELECT stock FROM products WHERE product_id = ?", (order['product_id'],))
+        stock = cursor.fetchone()
+        if stock and stock[0] >= order['quantity']:
+            return True
+        return False
+
+    def process_order(self):
+        order = {
+            'order_id': self.ui.order_id_entry.get(),
+            'customer_name': self.ui.customer_name_entry.get(),
+            'product_id': self.ui.product_id_entry.get(),
+            'quantity': int(self.ui.quantity_entry.get())
+        }
+        if not self.is_order_valid(order):
+            self.ui.message_label.config(text="Invalid order. Please check the order details.")
+            return
+        
+        if self.check_inventory(order):
+            self.update_inventory(order['product_id'], order['quantity'])
+            self.update_order_status(order['order_id'], 'Completed')
+            self.ui.message_label.config(text="Order processed successfully.")
+        else:
+            self.ui.message_label.config(text="Insufficient stock.")
+
+    def update_inventory(self, product_id, quantity):
+        conn = self.connect_db()
+        cursor = conn.cursor()
+        cursor.execute("UPDATE products SET stock = stock - ? WHERE product_id = ?", (quantity, product_id))
+        conn.commit()
+        conn.close()
+
+    def update_order_status(self, order_id, status):
+        conn = self.connect_db()
+        cursor = conn.cursor()
+        cursor.execute("UPDATE orders SET status = ? WHERE order_id = ?", (status, order_id))
+        conn.commit()
+        conn.close()

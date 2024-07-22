@@ -2,6 +2,11 @@ import sqlite3
 import tkinter as tk
 from tkinter import ttk
 import matplotlib.pyplot as plt
+import logging
+
+# Configure logging
+logging.basicConfig(filename='order_system.log', level=logging.INFO,
+                    format='%(asctime)s %(levelname)s %(message)s')
 
 # Initialize Database
 def init_db():
@@ -34,8 +39,8 @@ def init_db():
     ''')
     conn.commit()
     conn.close()
-    
-    
+    logging.info("Database initialized")
+
 # Populate initial product data
 def add_initial_products():
     products = [
@@ -48,9 +53,9 @@ def add_initial_products():
             c = conn.cursor()
             c.executemany('INSERT OR IGNORE INTO products (product_id, name, price, stock) VALUES (?, ?, ?, ?)', products)
             conn.commit()
+        logging.info("Initial products added")
     except sqlite3.OperationalError as e:
-        print(f"Error: {e}")
-
+        logging.error(f"Error adding initial products: {e}")
 
 # Order Processor Class
 class OrderProcessor:
@@ -76,51 +81,64 @@ class OrderProcessor:
         result = cursor.fetchone()
         if result:
             current_stock = result[0]
-            print(f"Current stock for product {product_id}: {current_stock}")
+            logging.info(f"Current stock for product {product_id}: {current_stock}")
             if current_stock >= int(quantity):
                 new_stock = current_stock - int(quantity)
                 cursor.execute("UPDATE products SET stock = ? WHERE product_id = ?", (new_stock, product_id))
                 cursor.execute("SELECT stock FROM products WHERE product_id = ?", (product_id,))
                 updated_result = cursor.fetchone()
-                print(f"Updated stock for product {product_id}: {updated_result[0]}")
+                logging.info(f"Updated stock for product {product_id}: {updated_result[0]}")
             else:
-                print("Not enough stock available.")
+                logging.warning(f"Not enough stock available for product {product_id}. Requested: {quantity}, Available: {current_stock}")
         else:
-            print(f"No stock information found for product {product_id}.")
+            logging.warning(f"No stock information found for product {product_id}")
 
     def add_order(self, order):
+        if not self.validate_order(order):
+            self.ui.message_label.config(text="Invalid order details")
+            return
+
         conn = self.connect_db()
         try:
             cursor = conn.cursor()
-            print(f"Inserting order: {order}")
+            logging.info(f"Inserting order: {order}")
             cursor.execute("INSERT INTO orders (order_id, customer_name, date, status) VALUES (?, ?, datetime('now'), 'Processing')",
                            (order['order_id'], order['customer_name']))
             cursor.execute("INSERT INTO order_details (order_id, product_id, quantity) VALUES (?, ?, ?)",
                            (order['order_id'], order['product_id'], order['quantity']))
             
-            # Check stock before reducing
             cursor.execute("SELECT stock FROM products WHERE product_id = ?", (order['product_id'],))
             before_stock = cursor.fetchone()
-            print(f"Stock for product {order['product_id']} before reduction: {before_stock[0]}")
+            logging.info(f"Stock for product {order['product_id']} before reduction: {before_stock[0]}")
             
-            # Reduce stock within the same transaction
             self.reduce_stock(cursor, order['product_id'], int(order['quantity']))
             
-            # Check stock after reducing
             cursor.execute("SELECT stock FROM products WHERE product_id = ?", (order['product_id'],))
             after_stock = cursor.fetchone()
-            print(f"Stock for product {order['product_id']} after reduction: {after_stock[0]}")
+            logging.info(f"Stock for product {order['product_id']} after reduction: {after_stock[0]}")
             
             conn.commit()
-            print(f"Order {order['order_id']} added to orders and order_details tables and stock reduced.")
+            logging.info(f"Order {order['order_id']} added to orders and order_details tables and stock reduced.")
             
             self.ui.message_label.config(text="Order added to the database.")
         except sqlite3.IntegrityError as e:
+            logging.error(f"Integrity error: {e}")
             self.ui.message_label.config(text=f"Error: {e}")
         except Exception as e:
+            logging.error(f"Error adding order: {e}")
             self.ui.message_label.config(text=f"An error occurred: {str(e)}")
         finally:
             conn.close()
+
+    def validate_order(self, order):
+        # Validate order details
+        if not order['customer_name'] or not order['product_id'] or not order['quantity'].isdigit():
+            logging.warning("Validation failed for order: missing or invalid fields")
+            return False
+        if int(order['quantity']) <= 0:
+            logging.warning("Validation failed for order: quantity must be positive")
+            return False
+        return True
 
     def fetch_orders(self):
         conn = self.connect_db()
@@ -139,7 +157,7 @@ class OrderProcessor:
         return inventory
 
     def plot_inventory_levels(self):
-        print("Fetching latest inventory data...")
+        logging.info("Fetching latest inventory data...")
         conn = None
         try:
             conn = self.connect_db()
@@ -148,7 +166,7 @@ class OrderProcessor:
             data = cursor.fetchall()
             if data:
                 products, stock_levels = zip(*data)
-                print(f"Latest stock levels: {list(stock_levels)}")  # Debug output to check stock levels
+                logging.info(f"Latest stock levels: {list(stock_levels)}")
                 plt.figure()
                 plt.bar(products, stock_levels)
                 plt.xlabel('Product Name')
@@ -156,11 +174,11 @@ class OrderProcessor:
                 plt.title('Inventory Levels')
                 plt.show()
             else:
-                print("No inventory data available.")
+                logging.info("No inventory data available.")
         finally:
             if conn:
                 conn.close()
-                
+
 # GUI Class
 class OrderProcessingUI:
     def __init__(self, master):
@@ -212,9 +230,8 @@ class OrderProcessingUI:
             "product_id": self.product_id_entry.get(),
             "quantity": self.quantity_entry.get()
         }
-        print(f"Submitting order: {order_details}")  # Debug statement to check order details
+        logging.info(f"Submitting order: {order_details}")
         self.order_processor.add_order(order_details)
-        self.message_label.config(text="Order submitted successfully.")
 
     def cancel_order(self):
         self.order_id_entry.delete(0, tk.END)
@@ -225,8 +242,7 @@ class OrderProcessingUI:
 
 if __name__ == "__main__":
     init_db()
-    add_initial_products()  # This ensures initial data is loaded
+    add_initial_products()
     root = tk.Tk()
     app = OrderProcessingUI(root)
     root.mainloop()
-

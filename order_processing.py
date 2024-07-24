@@ -107,7 +107,7 @@ class LoginUI:
         if self.authenticate(username, password):
             self.master.destroy()
             root = tk.Tk()
-            app = OrderProcessingUI(root, username)
+            app = OrderProcessingUI(root, username, self.user_role)
             root.mainloop()
         else:
             self.message_label.config(text="Invalid credentials")
@@ -248,9 +248,10 @@ class OrderProcessor:
 
 # GUI Class
 class OrderProcessingUI:
-    def __init__(self, master, username):
+    def __init__(self, master, username, user_role):
         self.master = master
         self.username = username
+        self.user_role = user_role
         self.master.title(f"Order Processing System - Logged in as {username}")
         self.master.geometry("800x600")
 
@@ -258,12 +259,18 @@ class OrderProcessingUI:
         notebook = ttk.Notebook(master)
         self.order_tab = ttk.Frame(notebook)
         self.inventory_tab = ttk.Frame(notebook)
+        self.admin_tab = None
+        if self.user_role == 'admin':
+            self.admin_tab = ttk.Frame(notebook)
+            notebook.add(self.admin_tab, text='Admin')
         notebook.add(self.order_tab, text='Order Entry')
         notebook.add(self.inventory_tab, text='Inventory Management')
         notebook.pack(expand=1, fill="both")
 
         self.setup_order_tab()
         self.setup_inventory_tab()
+        if self.admin_tab:
+            self.setup_admin_tab()
 
     def setup_order_tab(self):
         ttk.Label(self.order_tab, text="Order ID:").pack()
@@ -290,6 +297,57 @@ class OrderProcessingUI:
 
     def setup_inventory_tab(self):
         ttk.Button(self.inventory_tab, text="Plot Inventory Levels", command=self.order_processor.plot_inventory_levels).pack(pady=20)
+
+    def setup_admin_tab(self):
+        ttk.Label(self.admin_tab, text="Add New Product").pack()
+        ttk.Label(self.admin_tab, text="Product ID:").pack()
+        self.new_product_id_entry = ttk.Entry(self.admin_tab)
+        self.new_product_id_entry.pack()
+
+        ttk.Label(self.admin_tab, text="Product Name:").pack()
+        self.new_product_name_entry = ttk.Entry(self.admin_tab)
+        self.new_product_name_entry.pack()
+
+        ttk.Label(self.admin_tab, text="Price:").pack()
+        self.new_product_price_entry = ttk.Entry(self.admin_tab)
+        self.new_product_price_entry.pack()
+
+        ttk.Label(self.admin_tab, text="Stock:").pack()
+        self.new_product_stock_entry = ttk.Entry(self.admin_tab)
+        self.new_product_stock_entry.pack()
+
+        ttk.Button(self.admin_tab, text="Add Product", command=self.add_product).pack()
+        self.admin_message_label = ttk.Label(self.admin_tab, text="")
+        self.admin_message_label.pack()
+
+    def add_product(self):
+        product_id = self.new_product_id_entry.get()
+        product_name = self.new_product_name_entry.get()
+        price = self.new_product_price_entry.get()
+        stock = self.new_product_stock_entry.get()
+
+        if not product_id or not product_name or not price or not stock:
+            self.admin_message_label.config(text="All fields are required")
+            return
+
+        try:
+            price = float(price)
+            stock = int(stock)
+        except ValueError:
+            self.admin_message_label.config(text="Invalid price or stock value")
+            return
+
+        try:
+            with sqlite3.connect('order_system.db') as conn:
+                cursor = conn.cursor()
+                cursor.execute("INSERT INTO products (product_id, name, price, stock) VALUES (?, ?, ?, ?)",
+                               (product_id, product_name, price, stock))
+                conn.commit()
+            self.admin_message_label.config(text="Product added successfully")
+        except sqlite3.IntegrityError:
+            self.admin_message_label.config(text="Product ID already exists")
+        except Exception as e:
+            self.admin_message_label.config(text=f"An error occurred: {str(e)}")
 
     def submit_order(self):
         order_details = {

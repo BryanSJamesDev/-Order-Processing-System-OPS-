@@ -13,6 +13,14 @@ def init_db():
     conn = sqlite3.connect('order_system.db')
     c = conn.cursor()
     c.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE,
+            password TEXT,
+            role TEXT
+        )
+    ''')
+    c.execute('''
         CREATE TABLE IF NOT EXISTS products (
             product_id TEXT PRIMARY KEY,
             name TEXT,
@@ -56,6 +64,65 @@ def add_initial_products():
         logging.info("Initial products added")
     except sqlite3.OperationalError as e:
         logging.error(f"Error adding initial products: {e}")
+
+# Populate initial user data
+def add_initial_users():
+    users = [
+        ('admin', 'password', 'admin'),
+        ('manager', 'password', 'manager'),
+        ('employee', 'password', 'employee')
+    ]
+    try:
+        with sqlite3.connect('order_system.db') as conn:
+            c = conn.cursor()
+            c.executemany('INSERT OR IGNORE INTO users (username, password, role) VALUES (?, ?, ?)', users)
+            conn.commit()
+        logging.info("Initial users added")
+    except sqlite3.OperationalError as e:
+        logging.error(f"Error adding initial users: {e}")
+
+# Login UI Class
+class LoginUI:
+    def __init__(self, master):
+        self.master = master
+        self.master.title("Login")
+        self.master.geometry("300x200")
+
+        ttk.Label(master, text="Username:").pack()
+        self.username_entry = ttk.Entry(master)
+        self.username_entry.pack()
+
+        ttk.Label(master, text="Password:").pack()
+        self.password_entry = ttk.Entry(master, show="*")
+        self.password_entry.pack()
+
+        ttk.Button(master, text="Login", command=self.login).pack()
+        self.message_label = ttk.Label(master, text="")
+        self.message_label.pack()
+
+    def login(self):
+        username = self.username_entry.get()
+        password = self.password_entry.get()
+
+        if self.authenticate(username, password):
+            self.master.destroy()
+            root = tk.Tk()
+            app = OrderProcessingUI(root, username)
+            root.mainloop()
+        else:
+            self.message_label.config(text="Invalid credentials")
+
+    def authenticate(self, username, password):
+        conn = sqlite3.connect('order_system.db')
+        cursor = conn.cursor()
+        cursor.execute("SELECT role FROM users WHERE username = ? AND password = ?", (username, password))
+        result = cursor.fetchone()
+        conn.close()
+        if result:
+            self.user_role = result[0]
+            return True
+        else:
+            return False
 
 # Order Processor Class
 class OrderProcessor:
@@ -181,9 +248,10 @@ class OrderProcessor:
 
 # GUI Class
 class OrderProcessingUI:
-    def __init__(self, master):
+    def __init__(self, master, username):
         self.master = master
-        self.master.title("Order Processing System")
+        self.username = username
+        self.master.title(f"Order Processing System - Logged in as {username}")
         self.master.geometry("800x600")
 
         self.order_processor = OrderProcessor(self)
@@ -243,6 +311,7 @@ class OrderProcessingUI:
 if __name__ == "__main__":
     init_db()
     add_initial_products()
+    add_initial_users()
     root = tk.Tk()
-    app = OrderProcessingUI(root)
+    login_app = LoginUI(root)
     root.mainloop()

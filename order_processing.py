@@ -2,6 +2,7 @@ import sqlite3
 import tkinter as tk
 from tkinter import ttk
 import matplotlib.pyplot as plt
+import pandas as pd
 import logging
 
 # Configure logging
@@ -246,6 +247,24 @@ class OrderProcessor:
             if conn:
                 conn.close()
 
+    def generate_sales_report(self):
+        conn = self.connect_db()
+        try:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT o.order_id, o.customer_name, o.date, p.name, od.quantity, p.price, (od.quantity * p.price) AS total_price
+                FROM orders o
+                JOIN order_details od ON o.order_id = od.order_id
+                JOIN products p ON od.product_id = p.product_id
+            ''')
+            data = cursor.fetchall()
+            df = pd.DataFrame(data, columns=['Order ID', 'Customer Name', 'Date', 'Product Name', 'Quantity', 'Price', 'Total Price'])
+            logging.info(f"Sales report generated with {len(df)} entries.")
+            return df
+        finally:
+            if conn:
+                conn.close()
+
 # GUI Class
 class OrderProcessingUI:
     def __init__(self, master, username, user_role):
@@ -274,8 +293,8 @@ class OrderProcessingUI:
 
     def setup_order_tab(self):
         ttk.Label(self.order_tab, text="Order ID:").pack()
-        self.order_id_entry = ttk.Entry(self.order_tab)
-        self.order_id_entry.pack()
+        self.order_id_label = ttk.Label(self.order_tab, text="")
+        self.order_id_label.pack()
 
         ttk.Label(self.order_tab, text="Customer Name:").pack()
         self.customer_name_entry = ttk.Entry(self.order_tab)
@@ -297,6 +316,7 @@ class OrderProcessingUI:
 
     def setup_inventory_tab(self):
         ttk.Button(self.inventory_tab, text="Plot Inventory Levels", command=self.order_processor.plot_inventory_levels).pack(pady=20)
+        ttk.Button(self.inventory_tab, text="Generate Sales Report", command=self.generate_sales_report).pack(pady=20)
 
     def setup_admin_tab(self):
         ttk.Label(self.admin_tab, text="Add New Product").pack()
@@ -350,21 +370,47 @@ class OrderProcessingUI:
             self.admin_message_label.config(text=f"An error occurred: {str(e)}")
 
     def submit_order(self):
+        order_id = self.order_processor.generate_order_id()
         order_details = {
-            "order_id": self.order_processor.generate_order_id(),
+            "order_id": order_id,
             "customer_name": self.customer_name_entry.get(),
             "product_id": self.product_id_entry.get(),
             "quantity": self.quantity_entry.get()
         }
+        self.order_id_label.config(text=f"Order ID: {order_id}")
         logging.info(f"Submitting order: {order_details}")
         self.order_processor.add_order(order_details)
 
     def cancel_order(self):
-        self.order_id_entry.delete(0, tk.END)
+        self.order_id_label.config(text="")
         self.customer_name_entry.delete(0, tk.END)
         self.product_id_entry.delete(0, tk.END)
         self.quantity_entry.delete(0, tk.END)
         self.message_label.config(text="Order cancelled. All fields cleared.")
+
+    def generate_sales_report(self):
+        df = self.order_processor.generate_sales_report()
+        if df is not None:
+            report_window = tk.Toplevel(self.master)
+            report_window.title("Sales Report")
+
+            frame = ttk.Frame(report_window)
+            frame.pack(fill=tk.BOTH, expand=True)
+
+            tree = ttk.Treeview(frame, columns=list(df.columns), show='headings')
+            for col in df.columns:
+                tree.heading(col, text=col)
+                tree.column(col, width=100, anchor=tk.CENTER)
+            for index, row in df.iterrows():
+                tree.insert("", tk.END, values=list(row))
+            tree.pack(fill=tk.BOTH, expand=True)
+
+            export_button = ttk.Button(report_window, text="Export to CSV", command=lambda: self.export_to_csv(df))
+            export_button.pack(pady=10)
+
+    def export_to_csv(self, df):
+        df.to_csv('sales_report.csv', index=False)
+        logging.info("Sales report exported to sales_report.csv")
 
 if __name__ == "__main__":
     init_db()

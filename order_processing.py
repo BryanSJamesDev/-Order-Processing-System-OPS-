@@ -4,10 +4,34 @@ from tkinter import ttk
 import matplotlib.pyplot as plt
 import pandas as pd
 import logging
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 
 # Configure logging
 logging.basicConfig(filename='order_system.log', level=logging.INFO,
                     format='%(asctime)s %(levelname)s %(message)s')
+
+# Email configuration
+SMTP_SERVER = 'smtp.gmail.com'
+SMTP_PORT = 587
+EMAIL_ADDRESS = 'bryansamjames@gmail.com'
+EMAIL_PASSWORD = '123456qwertyZX*'
+
+def send_email(subject, body, to_address):
+    msg = MIMEMultipart()
+    msg['From'] = EMAIL_ADDRESS
+    msg['To'] = to_address
+    msg['Subject'] = subject
+    msg.attach(MIMEText(body, 'plain'))
+    try:
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+            server.starttls()
+            server.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
+            server.send_message(msg)
+        logging.info(f"Email sent to {to_address} with subject: {subject}")
+    except Exception as e:
+        logging.error(f"Failed to send email: {e}")
 
 # Initialize Database
 def init_db():
@@ -156,6 +180,8 @@ class OrderProcessor:
                 cursor.execute("SELECT stock FROM products WHERE product_id = ?", (product_id,))
                 updated_result = cursor.fetchone()
                 logging.info(f"Updated stock for product {product_id}: {updated_result[0]}")
+                if updated_result[0] < 20:  # Low stock threshold
+                    send_email("Low Stock Alert", f"The stock for product {product_id} is low: {updated_result[0]}", EMAIL_ADDRESS)
             else:
                 logging.warning(f"Not enough stock available for product {product_id}. Requested: {quantity}, Available: {current_stock}")
         else:
@@ -189,6 +215,9 @@ class OrderProcessor:
             logging.info(f"Order {order['order_id']} added to orders and order_details tables and stock reduced.")
             
             self.ui.message_label.config(text="Order added to the database.")
+            
+            # Send order confirmation email
+            send_email("Order Confirmation", f"Your order with Order ID {order['order_id']} has been placed successfully.", EMAIL_ADDRESS)
         except sqlite3.IntegrityError as e:
             logging.error(f"Integrity error: {e}")
             self.ui.message_label.config(text=f"Error: {e}")

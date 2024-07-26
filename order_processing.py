@@ -16,7 +16,7 @@ logging.basicConfig(filename='order_system.log', level=logging.INFO,
 SMTP_SERVER = 'smtp.gmail.com'
 SMTP_PORT = 587
 EMAIL_ADDRESS = 'bryansamjames@gmail.com'
-EMAIL_PASSWORD = '123456qwertyZX*'
+EMAIL_PASSWORD = 'abcd efgh ijkl mnop'  # Replace this with your actual app password
 
 def send_email(subject, body, to_address):
     msg = MIMEMultipart()

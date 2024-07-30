@@ -17,7 +17,7 @@ logging.basicConfig(filename='order_system.log', level=logging.INFO,
 SMTP_SERVER = 'smtp.gmail.com'
 SMTP_PORT = 587
 EMAIL_ADDRESS = 'bryansamjames@gmail.com'
-EMAIL_PASSWORD = 'aznh qyep jfvd izel'  # Replace this with your actual app password
+EMAIL_PASSWORD = 'abcd efgh ijkl mnop'  # Replace this with your actual app password
 
 def send_email(subject, body, to_address):
     msg = MIMEMultipart()
@@ -71,6 +71,16 @@ def init_db():
             FOREIGN KEY(product_id) REFERENCES products(product_id)
         )
     ''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS user_registrations (
+            registration_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE,
+            password TEXT,
+            email TEXT UNIQUE,
+            role TEXT,
+            status TEXT DEFAULT 'pending'
+        )
+    ''')
     conn.commit()
     conn.close()
     logging.info("Database initialized")
@@ -101,9 +111,9 @@ def add_initial_users():
     try:
         with sqlite3.connect('order_system.db') as conn:
             c = conn.cursor()
-            c.executemany('INSERT OR REPLACE INTO users (username, password, role) VALUES (?, ?, ?)', users)
+            c.executemany('INSERT OR IGNORE INTO users (username, password, role) VALUES (?, ?, ?)', users)
             conn.commit()
-        logging.info("Initial users added with hashed passwords")
+        logging.info("Initial users added")
     except sqlite3.OperationalError as e:
         logging.error(f"Error adding initial users: {e}")
 
@@ -123,6 +133,7 @@ class LoginUI:
         self.password_entry.pack()
 
         ttk.Button(master, text="Login", command=self.login).pack()
+        ttk.Button(master, text="Register", command=self.open_registration).pack()
         self.message_label = ttk.Label(master, text="")
         self.message_label.pack()
 
@@ -154,6 +165,61 @@ class LoginUI:
         else:
             logging.warning(f"User {username} not found")
         return False
+
+    def open_registration(self):
+        registration_root = tk.Toplevel(self.master)
+        registration_app = RegistrationUI(registration_root)
+
+# Registration UI Class
+class RegistrationUI:
+    def __init__(self, master):
+        self.master = master
+        self.master.title("User Registration")
+        self.master.geometry("300x300")
+
+        ttk.Label(master, text="Username:").pack()
+        self.username_entry = ttk.Entry(master)
+        self.username_entry.pack()
+
+        ttk.Label(master, text="Password:").pack()
+        self.password_entry = ttk.Entry(master, show="*")
+        self.password_entry.pack()
+
+        ttk.Label(master, text="Email:").pack()
+        self.email_entry = ttk.Entry(master)
+        self.email_entry.pack()
+
+        ttk.Label(master, text="Role:").pack()
+        self.role_entry = ttk.Entry(master)
+        self.role_entry.pack()
+
+        ttk.Button(master, text="Register", command=self.register).pack()
+        self.message_label = ttk.Label(master, text="")
+        self.message_label.pack()
+
+    def register(self):
+        username = self.username_entry.get()
+        password = self.password_entry.get()
+        email = self.email_entry.get()
+        role = self.role_entry.get()
+
+        if not username or not password or not email or not role:
+            self.message_label.config(text="All fields are required")
+            return
+
+        hashed_password = generate_password_hash(password)
+
+        try:
+            with sqlite3.connect('order_system.db') as conn:
+                c = conn.cursor()
+                c.execute("INSERT INTO user_registrations (username, password, email, role) VALUES (?, ?, ?, ?)",
+                          (username, hashed_password, email, role))
+                conn.commit()
+            self.message_label.config(text="Registration successful. Await approval.")
+        except sqlite3.IntegrityError:
+            self.message_label.config(text="Username or email already exists")
+        except Exception as e:
+            self.message_label.config(text=f"An error occurred: {str(e)}")
 
 # Order Processor Class
 class OrderProcessor:
@@ -374,6 +440,51 @@ class OrderProcessingUI:
         ttk.Button(self.admin_tab, text="Add Product", command=self.add_product).pack()
         self.admin_message_label = ttk.Label(self.admin_tab, text="")
         self.admin_message_label.pack()
+
+        ttk.Label(self.admin_tab, text="Approve/Reject Registrations").pack()
+        self.registrations_listbox = tk.Listbox(self.admin_tab)
+        self.registrations_listbox.pack()
+        self.load_pending_registrations()
+
+        ttk.Button(self.admin_tab, text="Approve", command=self.approve_registration).pack()
+        ttk.Button(self.admin_tab, text="Reject", command=self.reject_registration).pack()
+
+    def load_pending_registrations(self):
+        self.registrations_listbox.delete(0, tk.END)
+        conn = sqlite3.connect('order_system.db')
+        cursor = conn.cursor()
+        cursor.execute("SELECT registration_id, username, email, role FROM user_registrations WHERE status = 'pending'")
+        registrations = cursor.fetchall()
+        conn.close()
+        for reg in registrations:
+            self.registrations_listbox.insert(tk.END, f"{reg[0]}: {reg[1]} ({reg[2]}, {reg[3]})")
+
+    def approve_registration(self):
+        selected = self.registrations_listbox.curselection()
+        if selected:
+            reg_id = self.registrations_listbox.get(selected[0]).split(":")[0]
+            conn = sqlite3.connect('order_system.db')
+            cursor = conn.cursor()
+            cursor.execute("SELECT username, password, email, role FROM user_registrations WHERE registration_id = ?", (reg_id,))
+            reg = cursor.fetchone()
+            cursor.execute("INSERT INTO users (username, password, role) VALUES (?, ?, ?)", (reg[0], reg[1], reg[3]))
+            cursor.execute("UPDATE user_registrations SET status = 'approved' WHERE registration_id = ?", (reg_id,))
+            conn.commit()
+            conn.close()
+            self.load_pending_registrations()
+            self.admin_message_label.config(text=f"User {reg[0]} approved")
+
+    def reject_registration(self):
+        selected = self.registrations_listbox.curselection()
+        if selected:
+            reg_id = self.registrations_listbox.get(selected[0]).split(":")[0]
+            conn = sqlite3.connect('order_system.db')
+            cursor = conn.cursor()
+            cursor.execute("UPDATE user_registrations SET status = 'rejected' WHERE registration_id = ?", (reg_id,))
+            conn.commit()
+            conn.close()
+            self.load_pending_registrations()
+            self.admin_message_label.config(text=f"Registration {reg_id} rejected")
 
     def add_product(self):
         product_id = self.new_product_id_entry.get()

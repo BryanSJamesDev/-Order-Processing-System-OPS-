@@ -7,6 +7,7 @@ import logging
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from werkzeug.security import generate_password_hash, check_password_hash
 
 # Configure logging
 logging.basicConfig(filename='order_system.log', level=logging.INFO,
@@ -16,7 +17,7 @@ logging.basicConfig(filename='order_system.log', level=logging.INFO,
 SMTP_SERVER = 'smtp.gmail.com'
 SMTP_PORT = 587
 EMAIL_ADDRESS = 'bryansamjames@gmail.com'
-EMAIL_PASSWORD = 'abcd efgh ijkl mnop'  # Replace this with your actual app password
+EMAIL_PASSWORD = 'aznh qyep jfvd izel'  # Replace this with your actual app password
 
 def send_email(subject, body, to_address):
     msg = MIMEMultipart()
@@ -93,16 +94,16 @@ def add_initial_products():
 # Populate initial user data
 def add_initial_users():
     users = [
-        ('admin', 'password', 'admin'),
-        ('manager', 'password', 'manager'),
-        ('employee', 'password', 'employee')
+        ('admin', generate_password_hash('password'), 'admin'),
+        ('manager', generate_password_hash('password'), 'manager'),
+        ('employee', generate_password_hash('password'), 'employee')
     ]
     try:
         with sqlite3.connect('order_system.db') as conn:
             c = conn.cursor()
-            c.executemany('INSERT OR IGNORE INTO users (username, password, role) VALUES (?, ?, ?)', users)
+            c.executemany('INSERT OR REPLACE INTO users (username, password, role) VALUES (?, ?, ?)', users)
             conn.commit()
-        logging.info("Initial users added")
+        logging.info("Initial users added with hashed passwords")
     except sqlite3.OperationalError as e:
         logging.error(f"Error adding initial users: {e}")
 
@@ -140,14 +141,19 @@ class LoginUI:
     def authenticate(self, username, password):
         conn = sqlite3.connect('order_system.db')
         cursor = conn.cursor()
-        cursor.execute("SELECT role FROM users WHERE username = ? AND password = ?", (username, password))
+        cursor.execute("SELECT password, role FROM users WHERE username = ?", (username,))
         result = cursor.fetchone()
         conn.close()
         if result:
-            self.user_role = result[0]
-            return True
+            stored_password, self.user_role = result
+            if check_password_hash(stored_password, password):
+                logging.info(f"User {username} authenticated successfully")
+                return True
+            else:
+                logging.warning(f"Password mismatch for user: {username}")
         else:
-            return False
+            logging.warning(f"User {username} not found")
+        return False
 
 # Order Processor Class
 class OrderProcessor:

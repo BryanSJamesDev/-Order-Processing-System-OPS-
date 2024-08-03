@@ -17,7 +17,7 @@ logging.basicConfig(filename='order_system.log', level=logging.INFO,
 SMTP_SERVER = 'smtp.gmail.com'
 SMTP_PORT = 587
 EMAIL_ADDRESS = 'bryansamjames@gmail.com'
-EMAIL_PASSWORD = 'abcd efgh ijkl mnop'  # Replace this with your actual app password
+EMAIL_PASSWORD = 'aznh qyep jfvd izel'  # Replace this with your actual app password
 
 def send_email(subject, body, to_address):
     msg = MIMEMultipart()
@@ -438,6 +438,8 @@ class OrderProcessingUI:
         self.new_product_stock_entry.pack()
 
         ttk.Button(self.admin_tab, text="Add Product", command=self.add_product).pack()
+        ttk.Button(self.admin_tab, text="Update Product", command=self.update_product).pack()
+        ttk.Button(self.admin_tab, text="Delete Product", command=self.delete_product).pack()
         self.admin_message_label = ttk.Label(self.admin_tab, text="")
         self.admin_message_label.pack()
 
@@ -512,6 +514,49 @@ class OrderProcessingUI:
             self.admin_message_label.config(text="Product added successfully")
         except sqlite3.IntegrityError:
             self.admin_message_label.config(text="Product ID already exists")
+        except Exception as e:
+            self.admin_message_label.config(text=f"An error occurred: {str(e)}")
+
+    def update_product(self):
+        product_id = self.new_product_id_entry.get()
+        product_name = self.new_product_name_entry.get()
+        price = self.new_product_price_entry.get()
+        stock = self.new_product_stock_entry.get()
+
+        if not product_id or not product_name or not price or not stock:
+            self.admin_message_label.config(text="All fields are required")
+            return
+
+        try:
+            price = float(price)
+            stock = int(stock)
+        except ValueError:
+            self.admin_message_label.config(text="Invalid price or stock value")
+            return
+
+        try:
+            with sqlite3.connect('order_system.db') as conn:
+                cursor = conn.cursor()
+                cursor.execute("UPDATE products SET name = ?, price = ?, stock = ? WHERE product_id = ?",
+                               (product_name, price, stock, product_id))
+                conn.commit()
+            self.admin_message_label.config(text="Product updated successfully")
+        except Exception as e:
+            self.admin_message_label.config(text=f"An error occurred: {str(e)}")
+
+    def delete_product(self):
+        product_id = self.new_product_id_entry.get()
+
+        if not product_id:
+            self.admin_message_label.config(text="Product ID is required")
+            return
+
+        try:
+            with sqlite3.connect('order_system.db') as conn:
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM products WHERE product_id = ?", (product_id,))
+                conn.commit()
+            self.admin_message_label.config(text="Product deleted successfully")
         except Exception as e:
             self.admin_message_label.config(text=f"An error occurred: {str(e)}")
 

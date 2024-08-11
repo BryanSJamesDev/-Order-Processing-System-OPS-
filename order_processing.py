@@ -8,16 +8,16 @@ import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from werkzeug.security import generate_password_hash, check_password_hash
+import seaborn as sns
 
 # Configure logging
-logging.basicConfig(filename='order_system.log', level=logging.INFO,
-                    format='%(asctime)s %(levelname)s %(message)s')
+logging.basicConfig(filename='order_system.log', level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 
 # Email configuration
 SMTP_SERVER = 'smtp.gmail.com'
 SMTP_PORT = 587
 EMAIL_ADDRESS = 'bryansamjames@gmail.com'
-EMAIL_PASSWORD = 'aznh qyep jfvd izel'  # Replace this with your actual app password
+EMAIL_PASSWORD = 'abcd efgh ijkl mnop'  # Replace this with your actual app password
 
 def send_email(subject, body, to_address):
     msg = MIMEMultipart()
@@ -47,6 +47,16 @@ def init_db():
         )
     ''')
     c.execute('''
+        CREATE TABLE IF NOT EXISTS user_registrations (
+            registration_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE,
+            password TEXT,
+            email TEXT,
+            role TEXT,
+            status TEXT
+        )
+    ''')
+    c.execute('''
         CREATE TABLE IF NOT EXISTS products (
             product_id TEXT PRIMARY KEY,
             name TEXT,
@@ -69,16 +79,6 @@ def init_db():
             quantity INTEGER,
             FOREIGN KEY(order_id) REFERENCES orders(order_id),
             FOREIGN KEY(product_id) REFERENCES products(product_id)
-        )
-    ''')
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS user_registrations (
-            registration_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE,
-            password TEXT,
-            email TEXT,
-            role TEXT,
-            status TEXT
         )
     ''')
     conn.commit()
@@ -318,10 +318,15 @@ class OrderProcessingUI:
         notebook = ttk.Notebook(master)
         self.order_tab = ttk.Frame(notebook)
         self.inventory_tab = ttk.Frame(notebook)
-        self.admin_tab = None
+        self.analytics_tab = None
+
         if self.user_role == 'admin':
             self.admin_tab = ttk.Frame(notebook)
             notebook.add(self.admin_tab, text='Admin')
+
+        self.analytics_tab = ttk.Frame(notebook)
+        notebook.add(self.analytics_tab, text='Sales Analytics')
+        
         notebook.add(self.order_tab, text='Order Entry')
         notebook.add(self.inventory_tab, text='Inventory Management')
         notebook.pack(expand=1, fill="both")
@@ -330,6 +335,10 @@ class OrderProcessingUI:
         self.setup_inventory_tab()
         if self.admin_tab:
             self.setup_admin_tab()
+        if self.analytics_tab:
+            self.setup_analytics_tab()
+
+    # Other setup functions...
 
     def setup_order_tab(self):
         ttk.Label(self.order_tab, text="Order ID:").pack()
@@ -379,56 +388,60 @@ class OrderProcessingUI:
         ttk.Button(self.admin_tab, text="Add Product", command=self.add_product).pack()
         ttk.Button(self.admin_tab, text="Update Product", command=self.update_product).pack()
         ttk.Button(self.admin_tab, text="Delete Product", command=self.delete_product).pack()
+
+        ttk.Label(self.admin_tab, text="Approve/Reject Registrations").pack(pady=10)
+        self.registration_listbox = tk.Listbox(self.admin_tab)
+        self.registration_listbox.pack()
+        self.load_registrations()
+
+        ttk.Button(self.admin_tab, text="Approve", command=self.approve_registration).pack(side=tk.LEFT, padx=10)
+        ttk.Button(self.admin_tab, text="Reject", command=self.reject_registration).pack(side=tk.LEFT)
+
         self.admin_message_label = ttk.Label(self.admin_tab, text="")
         self.admin_message_label.pack()
 
-        ttk.Label(self.admin_tab, text="Approve/Reject Registrations").pack()
-        self.registrations_listbox = tk.Listbox(self.admin_tab)
-        self.registrations_listbox.pack()
-        ttk.Button(self.admin_tab, text="Approve", command=self.approve_registration).pack()
-        ttk.Button(self.admin_tab, text="Reject", command=self.reject_registration).pack()
+    def setup_analytics_tab(self):
+        ttk.Button(self.analytics_tab, text="View Sales Summary", command=self.view_sales_summary).pack(pady=10)
+        ttk.Button(self.analytics_tab, text="Sales by Product", command=self.plot_sales_by_product).pack(pady=10)
+        ttk.Button(self.analytics_tab, text="Monthly Sales", command=self.plot_monthly_sales).pack(pady=10)
 
-        self.load_pending_registrations()
-
-    def load_pending_registrations(self):
-        self.registrations_listbox.delete(0, tk.END)
+    def load_registrations(self):
         conn = sqlite3.connect('order_system.db')
         cursor = conn.cursor()
-        cursor.execute("SELECT registration_id, username, email, role FROM user_registrations WHERE status = 'pending'")
-        pending_registrations = cursor.fetchall()
+        cursor.execute("SELECT registration_id, username FROM user_registrations WHERE status = 'Pending'")
+        registrations = cursor.fetchall()
+        self.registration_listbox.delete(0, tk.END)
+        for reg in registrations:
+            self.registration_listbox.insert(tk.END, f"{reg[0]}: {reg[1]}")
         conn.close()
 
-        for registration in pending_registrations:
-            self.registrations_listbox.insert(tk.END, f"{registration[0]}: {registration[1]} - {registration[2]} ({registration[3]})")
-
     def approve_registration(self):
-        selected = self.registrations_listbox.get(tk.ACTIVE)
-        if selected:
-            reg_id = selected.split(":")[0]
+        selection = self.registration_listbox.curselection()
+        if selection:
+            reg_id = self.registration_listbox.get(selection[0]).split(":")[0]
             conn = sqlite3.connect('order_system.db')
             cursor = conn.cursor()
             cursor.execute("SELECT username, password, email, role FROM user_registrations WHERE registration_id = ?", (reg_id,))
             user_data = cursor.fetchone()
             if user_data:
                 cursor.execute("INSERT INTO users (username, password, role) VALUES (?, ?, ?)", (user_data[0], user_data[1], user_data[3]))
-                cursor.execute("UPDATE user_registrations SET status = 'approved' WHERE registration_id = ?", (reg_id,))
+                cursor.execute("UPDATE user_registrations SET status = 'Approved' WHERE registration_id = ?", (reg_id,))
                 conn.commit()
-                send_email("Registration Approved", f"Your registration as {user_data[3]} has been approved.", user_data[2])
+                self.admin_message_label.config(text="User approved and added to the system.")
             conn.close()
-            self.load_pending_registrations()
-            self.admin_message_label.config(text=f"Registration {reg_id} approved")
+            self.load_registrations()
 
     def reject_registration(self):
-        selected = self.registrations_listbox.get(tk.ACTIVE)
-        if selected:
-            reg_id = selected.split(":")[0]
+        selection = self.registration_listbox.curselection()
+        if selection:
+            reg_id = self.registration_listbox.get(selection[0]).split(":")[0]
             conn = sqlite3.connect('order_system.db')
             cursor = conn.cursor()
-            cursor.execute("UPDATE user_registrations SET status = 'rejected' WHERE registration_id = ?", (reg_id,))
+            cursor.execute("UPDATE user_registrations SET status = 'Rejected' WHERE registration_id = ?", (reg_id,))
             conn.commit()
             conn.close()
-            self.load_pending_registrations()
-            self.admin_message_label.config(text=f"Registration {reg_id} rejected")
+            self.load_registrations()
+            self.admin_message_label.config(text="User registration rejected.")
 
     def add_product(self):
         product_id = self.new_product_id_entry.get()
@@ -483,11 +496,14 @@ class OrderProcessingUI:
                                (product_name, price, stock, product_id))
                 conn.commit()
             self.admin_message_label.config(text="Product updated successfully")
+        except sqlite3.IntegrityError:
+            self.admin_message_label.config(text="Error updating product")
         except Exception as e:
             self.admin_message_label.config(text=f"An error occurred: {str(e)}")
 
     def delete_product(self):
         product_id = self.new_product_id_entry.get()
+
         if not product_id:
             self.admin_message_label.config(text="Product ID is required")
             return
@@ -543,6 +559,36 @@ class OrderProcessingUI:
     def export_to_csv(self, df):
         df.to_csv('sales_report.csv', index=False)
         logging.info("Sales report exported to sales_report.csv")
+
+    def view_sales_summary(self):
+        df = self.order_processor.generate_sales_report()
+        if df is not None:
+            summary = df.groupby('Product Name')['Total Price'].sum()
+            plt.figure()
+            summary.plot(kind='bar', title='Sales Summary by Product')
+            plt.xlabel('Product Name')
+            plt.ylabel('Total Sales')
+            plt.show()
+
+    def plot_sales_by_product(self):
+        df = self.order_processor.generate_sales_report()
+        if df is not None:
+            plt.figure()
+            sns.barplot(x='Product Name', y='Quantity', data=df, estimator=sum)
+            plt.title('Total Sales by Product')
+            plt.show()
+
+    def plot_monthly_sales(self):
+        df = self.order_processor.generate_sales_report()
+        if df is not None:
+            df['Date'] = pd.to_datetime(df['Date'])
+            monthly_sales = df.resample('M', on='Date').sum()
+            plt.figure()
+            monthly_sales['Total Price'].plot(kind='line', marker='o')
+            plt.title('Monthly Sales')
+            plt.xlabel('Month')
+            plt.ylabel('Total Sales')
+            plt.show()
 
 if __name__ == "__main__":
     init_db()

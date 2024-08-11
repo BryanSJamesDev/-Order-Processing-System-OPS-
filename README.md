@@ -9,8 +9,9 @@
 
 ![Screenshot (1878)](https://github.com/user-attachments/assets/e194bd88-418b-4fa9-b9f5-2ec80d74e56e)
 
+![Screenshot (1879)](https://github.com/user-attachments/assets/884a1f2e-f9a8-4deb-9848-150ad8c6454e)
 
-![Screenshot (1808)](https://github.com/user-attachments/assets/3021c4f5-0671-45be-8f4d-3f4d0e575e34)
+
 ![Screenshot (1817)](https://github.com/user-attachments/assets/664d5725-0a98-4dda-b92b-0e5b73dfbc0d)
 
 

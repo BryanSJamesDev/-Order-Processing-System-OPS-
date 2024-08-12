@@ -5,7 +5,8 @@
 
 ![Screenshot (1876)](https://github.com/user-attachments/assets/2409adca-989f-4143-a105-2eb2ce8db28d)
 
-![Screenshot (1877)](https://github.com/user-attachments/assets/8071a8f1-4da4-4493-9b3c-65f3bd84f9e3)
+![Screenshot (1883)](https://github.com/user-attachments/assets/757b26d2-2327-4d7a-99c2-33cf0842eace)
+
 
 ![Screenshot (1878)](https://github.com/user-attachments/assets/e194bd88-418b-4fa9-b9f5-2ec80d74e56e)
 

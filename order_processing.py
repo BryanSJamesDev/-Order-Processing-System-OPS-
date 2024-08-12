@@ -17,7 +17,7 @@ logging.basicConfig(filename='order_system.log', level=logging.INFO, format='%(a
 SMTP_SERVER = 'smtp.gmail.com'
 SMTP_PORT = 587
 EMAIL_ADDRESS = 'bryansamjames@gmail.com'
-EMAIL_PASSWORD = 'abcd efgh ijkl mnop'  # Replace this with your actual app password
+EMAIL_PASSWORD = 'aznh qyep jfvd izel'  # Replace this with your actual app password
 
 def send_email(subject, body, to_address):
     msg = MIMEMultipart()
@@ -69,7 +69,8 @@ def init_db():
             order_id TEXT PRIMARY KEY,
             customer_name TEXT,
             date TEXT,
-            status TEXT
+            status TEXT,
+            order_status TEXT DEFAULT 'Processing'
         )
     ''')
     c.execute('''
@@ -248,10 +249,22 @@ class OrderProcessor:
             return False
         return True
 
-    def fetch_orders(self):
+    def update_order_status(self, order_id, new_status):
+        conn = self.connect_db()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("UPDATE orders SET order_status = ? WHERE order_id = ?", (new_status, order_id))
+            conn.commit()
+            logging.info(f"Order ID {order_id} status updated to {new_status}")
+        except Exception as e:
+            logging.error(f"Failed to update order status: {e}")
+        finally:
+            conn.close()
+
+    def fetch_orders_with_status(self):
         conn = self.connect_db()
         cursor = conn.cursor()
-        cursor.execute("SELECT order_id, customer_name, date, status FROM orders")
+        cursor.execute("SELECT order_id, customer_name, date, order_status FROM orders")
         orders = cursor.fetchall()
         conn.close()
         return orders
@@ -362,6 +375,18 @@ class OrderProcessingUI:
 
         self.message_label = ttk.Label(self.order_tab, text="")
         self.message_label.pack()
+
+        ttk.Label(self.order_tab, text="Update Order Status").pack(pady=10)
+        self.order_status_entry = ttk.Entry(self.order_tab)
+        self.order_status_entry.pack()
+
+        ttk.Button(self.order_tab, text="Update Status", command=self.update_status).pack(pady=10)
+    
+    def update_status(self):
+        order_id = self.order_id_label.cget("text").split(": ")[1]
+        new_status = self.order_status_entry.get()
+        self.order_processor.update_order_status(order_id, new_status)
+        self.message_label.config(text=f"Order ID {order_id} status updated to {new_status}")
 
     def setup_inventory_tab(self):
         ttk.Button(self.inventory_tab, text="Plot Inventory Levels", command=self.order_processor.plot_inventory_levels).pack(pady=20)

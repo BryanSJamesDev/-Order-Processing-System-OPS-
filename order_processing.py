@@ -8,7 +8,11 @@ import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from werkzeug.security import generate_password_hash, check_password_hash
-import seaborn as sns
+from sklearn.linear_model import LinearRegression
+import numpy as np
+import threading
+import seaborn as sns  # Ensure seaborn is imported
+import time
 
 # Configure logging
 logging.basicConfig(filename='order_system.log', level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
@@ -19,6 +23,10 @@ SMTP_PORT = 587
 EMAIL_ADDRESS = 'bryansamjames@gmail.com'
 EMAIL_PASSWORD = 'aznh qyep jfvd izel'  # Replace this with your actual app password
 
+# Real-time Dashboard Update Interval (in seconds)
+DASHBOARD_UPDATE_INTERVAL = 10
+
+# Function to send emails
 def send_email(subject, body, to_address):
     msg = MIMEMultipart()
     msg['From'] = EMAIL_ADDRESS
@@ -318,7 +326,93 @@ class OrderProcessor:
             if conn:
                 conn.close()
 
-# GUI Class
+# Predictive Analytics for Stock Management
+def predict_stock_requirements(product_id):
+    conn = sqlite3.connect('order_system.db')
+    cursor = conn.cursor()
+    
+    # Fetch historical sales data for the product
+    cursor.execute('''
+        SELECT od.quantity, o.date
+        FROM order_details od
+        JOIN orders o ON od.order_id = o.order_id
+        WHERE od.product_id = ?
+        ORDER BY o.date
+    ''', (product_id,))
+    
+    data = cursor.fetchall()
+    conn.close()
+    
+    if not data:
+        logging.warning(f"No historical data available for product {product_id}")
+        return None
+    
+    # Prepare the data for linear regression
+    quantities = [row[0] for row in data]
+    dates = pd.to_datetime([row[1] for row in data])
+    days = (dates - dates.min()).days.values.reshape(-1, 1)
+    
+    # Train the linear regression model
+    model = LinearRegression()
+    model.fit(days, quantities)
+    
+    # Predict future stock requirements (e.g., for the next 30 days)
+    future_days = np.arange(days.max() + 1, days.max() + 31).reshape(-1, 1)
+    future_predictions = model.predict(future_days)
+    
+    return int(np.ceil(future_predictions.sum()))
+
+# Real-time Dashboard Class
+class RealTimeDashboard:
+    def __init__(self, master):
+        self.master = master
+        
+        self.label_sales = ttk.Label(master, text="Total Sales: $0", font=("Helvetica", 16))
+        self.label_sales.pack(pady=20)
+        
+        self.label_orders = ttk.Label(master, text="Total Orders: 0", font=("Helvetica", 16))
+        self.label_orders.pack(pady=20)
+        
+        self.label_low_stock = ttk.Label(master, text="Low Stock Alerts: None", font=("Helvetica", 16))
+        self.label_low_stock.pack(pady=20)
+        
+        self.start_dashboard_updates()
+
+    def update_dashboard(self):
+        logging.info("Updating dashboard...")
+        conn = sqlite3.connect('order_system.db')
+        cursor = conn.cursor()
+        
+        # Update total sales
+        cursor.execute('''
+            SELECT SUM(od.quantity * p.price)
+            FROM order_details od
+            JOIN products p ON od.product_id = p.product_id
+        ''')
+        total_sales = cursor.fetchone()[0] or 0
+        self.label_sales.config(text=f"Total Sales: ${total_sales:.2f}")
+        
+        # Update total orders
+        cursor.execute("SELECT COUNT(*) FROM orders")
+        total_orders = cursor.fetchone()[0]
+        self.label_orders.config(text=f"Total Orders: {total_orders}")
+        
+        # Update low stock alerts
+        cursor.execute("SELECT name FROM products WHERE stock < 20")
+        low_stock_items = cursor.fetchall()
+        if low_stock_items:
+            low_stock_text = "Low Stock Alerts: " + ", ".join([item[0] for item in low_stock_items])
+        else:
+            low_stock_text = "Low Stock Alerts: None"
+        self.label_low_stock.config(text=low_stock_text)
+        
+        conn.close()
+
+    def start_dashboard_updates(self):
+        self.update_dashboard()
+        threading.Timer(DASHBOARD_UPDATE_INTERVAL, self.start_dashboard_updates).start()
+
+# Main Application Class (Updated)
 class OrderProcessingUI:
     def __init__(self, master, username, user_role):
         self.master = master
@@ -340,6 +434,9 @@ class OrderProcessingUI:
         self.analytics_tab = ttk.Frame(notebook)
         notebook.add(self.analytics_tab, text='Sales Analytics')
         
+        self.dashboard_tab = ttk.Frame(notebook)
+        notebook.add(self.dashboard_tab, text='Dashboard')
+
         notebook.add(self.order_tab, text='Order Entry')
         notebook.add(self.inventory_tab, text='Inventory Management')
         notebook.pack(expand=1, fill="both")
@@ -350,6 +447,8 @@ class OrderProcessingUI:
             self.setup_admin_tab()
         if self.analytics_tab:
             self.setup_analytics_tab()
+        if self.dashboard_tab:
+            self.setup_dashboard_tab()
 
     # Other setup functions...
 
@@ -429,6 +528,9 @@ class OrderProcessingUI:
         ttk.Button(self.analytics_tab, text="View Sales Summary", command=self.view_sales_summary).pack(pady=10)
         ttk.Button(self.analytics_tab, text="Sales by Product", command=self.plot_sales_by_product).pack(pady=10)
         ttk.Button(self.analytics_tab, text="Monthly Sales", command=self.plot_monthly_sales).pack(pady=10)
+
+    def setup_dashboard_tab(self):
+        dashboard = RealTimeDashboard(self.dashboard_tab)
 
     def load_registrations(self):
         conn = sqlite3.connect('order_system.db')
@@ -607,7 +709,7 @@ class OrderProcessingUI:
         df = self.order_processor.generate_sales_report()
         if df is not None:
             df['Date'] = pd.to_datetime(df['Date'])
-            monthly_sales = df.resample('M', on='Date').sum()
+            monthly_sales = df.resample('ME', on='Date').sum()
             plt.figure()
             monthly_sales['Total Price'].plot(kind='line', marker='o')
             plt.title('Monthly Sales')

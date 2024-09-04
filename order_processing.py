@@ -13,9 +13,13 @@ import numpy as np
 import threading
 import seaborn as sns  # Ensure seaborn is imported
 import time
+import openai  # Ensure openai is imported for Chatbot
 
 # Configure logging
 logging.basicConfig(filename='order_system.log', level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
+
+# OpenAI API Key setup for Chatbot
+openai.api_key = 'AP1 Key'  # Replace with your OpenAI API key
 
 # Email configuration
 SMTP_SERVER = 'smtp.gmail.com'
@@ -125,6 +129,49 @@ def add_initial_users():
         logging.info("Initial users added")
     except sqlite3.OperationalError as e:
         logging.error(f"Error adding initial users: {e}")
+
+# Chatbot integration with OpenAI
+def chatbot_response(prompt):
+    try:
+        response = openai.Completion.create(
+            model="text-davinci-003",  # Use the ChatGPT model
+            prompt=prompt,
+            max_tokens=150
+        )
+        return response.choices[0].text.strip()
+    except Exception as e:
+        logging.error(f"Error with OpenAI API: {e}")
+        return "There was an issue connecting to the chatbot service. Please try again."
+
+# Chatbot Tab UI
+class ChatbotTab:
+    def __init__(self, master):
+        self.master = master
+        self.setup_ui()
+
+    def setup_ui(self):
+        # UI elements for chatbot interaction
+        self.label = ttk.Label(self.master, text="Ask a question:", font=("Helvetica", 14))
+        self.label.pack(pady=10)
+
+        self.user_input = tk.Entry(self.master, width=50)
+        self.user_input.pack(pady=10)
+
+        self.submit_button = ttk.Button(self.master, text="Ask", command=self.ask_chatbot)
+        self.submit_button.pack(pady=10)
+
+        self.response_area = tk.Text(self.master, wrap="word", height=10, width=60)
+        self.response_area.pack(pady=10)
+
+    def ask_chatbot(self):
+        user_query = self.user_input.get()
+        if user_query:
+            response = chatbot_response(user_query)
+            self.response_area.delete("1.0", tk.END)
+            self.response_area.insert(tk.END, f"Chatbot: {response}\n")
+        else:
+            self.response_area.delete("1.0", tk.END)
+            self.response_area.insert(tk.END, "Please enter a question.\n")
 
 # Login UI Class
 class LoginUI:
@@ -465,6 +512,11 @@ class OrderProcessingUI:
         
         self.dashboard_tab = ttk.Frame(notebook)
         notebook.add(self.dashboard_tab, text='Dashboard')
+
+        # Adding the Chatbot Tab
+        self.chatbot_tab = ttk.Frame(notebook)
+        notebook.add(self.chatbot_tab, text='Chatbot')
+        ChatbotTab(self.chatbot_tab)  # Initialize the Chatbot tab UI
 
         notebook.add(self.order_tab, text='Order Entry')
         notebook.add(self.inventory_tab, text='Inventory Management')

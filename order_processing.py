@@ -207,6 +207,35 @@ class OrderProcessor:
         else:
             logging.warning(f"No stock information found for product {product_id}")
 
+    def calculate_order_priority(self, order):
+        """Calculate order priority based on criteria: order value, customer loyalty, and delivery deadlines"""
+        conn = self.connect_db()
+        cursor = conn.cursor()
+        
+        # Get the total value of the order
+        cursor.execute('''
+            SELECT SUM(p.price * od.quantity) AS total_order_value
+            FROM order_details od
+            JOIN products p ON od.product_id = p.product_id
+            WHERE od.order_id = ?
+        ''', (order['order_id'],))
+        total_order_value = cursor.fetchone()[0] or 0
+
+        # Get customer loyalty score (number of previous orders)
+        cursor.execute('''
+            SELECT COUNT(*) FROM orders WHERE customer_name = ?
+        ''', (order['customer_name'],))
+        customer_loyalty_score = cursor.fetchone()[0]
+
+        # Deadline priority (For now, an arbitrary fixed value. In future, can be tied to order deadlines)
+        deadline_priority = 10  # Example priority based on deadline proximity
+        
+        # Calculate priority score based on weighted sum of the criteria
+        priority_score = (total_order_value * 0.5) + (customer_loyalty_score * 0.3) + (deadline_priority * 0.2)
+        
+        conn.close()
+        return priority_score
+
     def add_order(self, order):
         if not self.validate_order(order):
             self.ui.message_label.config(text="Invalid order details")

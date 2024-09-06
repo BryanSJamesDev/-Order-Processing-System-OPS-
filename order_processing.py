@@ -14,21 +14,29 @@ import threading
 import seaborn as sns  # Ensure seaborn is imported
 import time
 import openai  # Ensure openai is imported for Chatbot
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.metrics import classification_report, roc_auc_score
+from imblearn.over_sampling import SMOTE
+import joblib  # Ensure joblib is imported for model saving/loading
 
 # Configure logging
 logging.basicConfig(filename='order_system.log', level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 
 # OpenAI API Key setup for Chatbot
-openai.api_key = 'AP1 Key'  # Replace with your OpenAI API key
+openai.api_key = 'API key'  # Replace with your OpenAI API key
 
 # Email configuration
 SMTP_SERVER = 'smtp.gmail.com'
 SMTP_PORT = 587
-EMAIL_ADDRESS = 'bryansamjames@gmail.com'
-EMAIL_PASSWORD = 'aznh qyep jfvd izel'  # Replace this with your actual app password
+EMAIL_ADDRESS = 'abc@gmail.com'
+EMAIL_PASSWORD = 'abcd efgh ijkl mnop'  # Replace this with your actual app password
 
 # Real-time Dashboard Update Interval (in seconds)
 DASHBOARD_UPDATE_INTERVAL = 10
+
+# Fraud Detection Model Path
+FRAUD_MODEL_PATH = 'fraud_detection_model.pkl'  # Add this for fraud detection
 
 # Function to send emails
 def send_email(subject, body, to_address):
@@ -173,6 +181,51 @@ class ChatbotTab:
             self.response_area.delete("1.0", tk.END)
             self.response_area.insert(tk.END, "Please enter a question.\n")
 
+# Fraud Detection Functions
+def load_fraud_detection_model():
+    """
+    Load the pre-trained fraud detection model.
+    """
+    try:
+        model = joblib.load(FRAUD_MODEL_PATH)
+        logging.info("Fraud detection model loaded successfully.")
+        return model
+    except Exception as e:
+        logging.error(f"Error loading fraud detection model: {e}")
+        return None
+
+def feature_engineering(df):
+    """
+    Perform feature engineering on the transaction data.
+    """
+    df['total_customer_spent'] = df.groupby('customer_id')['transaction_amount'].transform('sum')
+    df['total_customer_orders'] = df.groupby('customer_id')['transaction_id'].transform('count')
+    df['avg_transaction_amount'] = df['total_customer_spent'] / df['total_customer_orders']
+    df['order_frequency'] = df.groupby('customer_id')['transaction_date'].transform(lambda x: (x.max() - x.min()).days)
+    return df
+
+def detect_fraud(order_details, model):
+    """
+    Detect if an order is potentially fraudulent using the trained model.
+    """
+    try:
+        # Convert order details into a DataFrame for prediction
+        order_df = pd.DataFrame([order_details])
+
+        # Perform feature engineering
+        order_df = feature_engineering(order_df)
+
+        # Select features used in training the model
+        features = ['total_customer_spent', 'total_customer_orders', 'avg_transaction_amount', 'order_frequency', 'transaction_amount']
+
+        # Predict fraud
+        fraud_prob = model.predict_proba(order_df[features])[:, 1]  # Probability of fraud
+        is_fraud = fraud_prob >= 0.9  # Use 0.9 threshold for flagging fraud
+        return is_fraud[0], fraud_prob[0]
+    except Exception as e:
+        logging.error(f"Error detecting fraud: {e}")
+        return False, 0.0
+
 # Login UI Class
 class LoginUI:
     def __init__(self, master):
@@ -221,6 +274,7 @@ class OrderProcessor:
     def __init__(self, ui):
         self.ui = ui
         self.db_path = 'order_system.db'
+        self.fraud_model = load_fraud_detection_model()  # Load fraud detection model
 
     def connect_db(self):
         conn = sqlite3.connect(self.db_path)
@@ -254,35 +308,6 @@ class OrderProcessor:
         else:
             logging.warning(f"No stock information found for product {product_id}")
 
-    def calculate_order_priority(self, order):
-        """Calculate order priority based on criteria: order value, customer loyalty, and delivery deadlines"""
-        conn = self.connect_db()
-        cursor = conn.cursor()
-        
-        # Get the total value of the order
-        cursor.execute('''
-            SELECT SUM(p.price * od.quantity) AS total_order_value
-            FROM order_details od
-            JOIN products p ON od.product_id = p.product_id
-            WHERE od.order_id = ?
-        ''', (order['order_id'],))
-        total_order_value = cursor.fetchone()[0] or 0
-
-        # Get customer loyalty score (number of previous orders)
-        cursor.execute('''
-            SELECT COUNT(*) FROM orders WHERE customer_name = ?
-        ''', (order['customer_name'],))
-        customer_loyalty_score = cursor.fetchone()[0]
-
-        # Deadline priority (For now, an arbitrary fixed value. In future, can be tied to order deadlines)
-        deadline_priority = 10  # Example priority based on deadline proximity
-        
-        # Calculate priority score based on weighted sum of the criteria
-        priority_score = (total_order_value * 0.5) + (customer_loyalty_score * 0.3) + (deadline_priority * 0.2)
-        
-        conn.close()
-        return priority_score
-
     def add_order(self, order):
         if not self.validate_order(order):
             self.ui.message_label.config(text="Invalid order details")
@@ -310,7 +335,13 @@ class OrderProcessor:
             conn.commit()
             logging.info(f"Order {order['order_id']} added to orders and order_details tables and stock reduced.")
             
-            self.ui.message_label.config(text="Order added to the database.")
+            # Detect fraud
+            is_fraud, fraud_prob = detect_fraud(order, self.fraud_model)
+            if is_fraud:
+                self.ui.message_label.config(text=f"Order flagged as potentially fraudulent! Fraud Probability: {fraud_prob:.2f}")
+                logging.warning(f"Order {order['order_id']} flagged as fraud. Fraud Probability: {fraud_prob:.2f}")
+            else:
+                self.ui.message_label.config(text="Order added to the database.")
             
             # Send order confirmation email
             send_email("Order Confirmation", f"Your order with Order ID {order['order_id']} has been placed successfully.", EMAIL_ADDRESS)
@@ -439,6 +470,7 @@ def predict_stock_requirements(product_id):
     return int(np.ceil(future_predictions.sum()))
 
 # Real-time Dashboard Class
+# Real-time Dashboard Class
 class RealTimeDashboard:
     def __init__(self, master):
         self.master = master
@@ -452,7 +484,7 @@ class RealTimeDashboard:
         self.label_low_stock = ttk.Label(master, text="Low Stock Alerts: None", font=("Helvetica", 16))
         self.label_low_stock.pack(pady=20)
         
-        self.start_dashboard_updates()
+        self.update_dashboard()
 
     def update_dashboard(self):
         logging.info("Updating dashboard...")
@@ -483,6 +515,10 @@ class RealTimeDashboard:
         self.label_low_stock.config(text=low_stock_text)
         
         conn.close()
+
+        # Schedule the next update in the main thread
+        self.master.after(DASHBOARD_UPDATE_INTERVAL * 1000, self.update_dashboard)
+
 
     def start_dashboard_updates(self):
         self.update_dashboard()

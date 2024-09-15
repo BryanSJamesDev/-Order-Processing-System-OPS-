@@ -24,7 +24,7 @@ import joblib  # Ensure joblib is imported for model saving/loading
 logging.basicConfig(filename='order_system.log', level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 
 # OpenAI API Key setup for Chatbot
-openai.api_key = 'API key'  # Replace with your OpenAI API key
+openai.api_key = 'API KEY'  # Replace with your OpenAI API key
 
 # Email configuration
 SMTP_SERVER = 'smtp.gmail.com'
@@ -58,6 +58,8 @@ def send_email(subject, body, to_address):
 def init_db():
     conn = sqlite3.connect('order_system.db')
     c = conn.cursor()
+    
+    # Create users table
     c.execute('''
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -66,6 +68,8 @@ def init_db():
             role TEXT
         )
     ''')
+    
+    # Create user_registrations table
     c.execute('''
         CREATE TABLE IF NOT EXISTS user_registrations (
             registration_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -76,6 +80,8 @@ def init_db():
             status TEXT
         )
     ''')
+    
+    # Create products table
     c.execute('''
         CREATE TABLE IF NOT EXISTS products (
             product_id TEXT PRIMARY KEY,
@@ -84,15 +90,21 @@ def init_db():
             stock INTEGER
         )
     ''')
+    
+    # Create orders table with fraud_flag and fraud_prob columns
     c.execute('''
         CREATE TABLE IF NOT EXISTS orders (
             order_id TEXT PRIMARY KEY,
             customer_name TEXT,
             date TEXT,
             status TEXT,
-            order_status TEXT DEFAULT 'Processing'
+            order_status TEXT DEFAULT 'Processing',
+            fraud_flag INTEGER DEFAULT 0,  -- Add fraud_flag (0 for non-fraud, 1 for fraud)
+            fraud_prob REAL DEFAULT 0.0    -- Add fraud_prob (Probability of fraud)
         )
     ''')
+
+    # Create order_details table
     c.execute('''
         CREATE TABLE IF NOT EXISTS order_details (
             order_id TEXT,
@@ -102,9 +114,24 @@ def init_db():
             FOREIGN KEY(product_id) REFERENCES products(product_id)
         )
     ''')
+    
     conn.commit()
     conn.close()
-    logging.info("Database initialized")
+    logging.info("Database initialized with fraud detection columns.")
+
+
+def alter_orders_table():
+    conn = sqlite3.connect('order_system.db')
+    c = conn.cursor()
+    try:
+        c.execute("ALTER TABLE orders ADD COLUMN fraud_flag INTEGER DEFAULT 0")
+        c.execute("ALTER TABLE orders ADD COLUMN fraud_prob REAL DEFAULT 0.0")
+        logging.info("Added fraud_flag and fraud_prob columns to the orders table.")
+    except sqlite3.OperationalError as e:
+        logging.warning(f"Columns already exist or failed to add: {e}")
+    conn.commit()
+    conn.close()
+
 
 # Populate initial product data
 def add_initial_products():
@@ -340,11 +367,15 @@ class OrderProcessor:
             if is_fraud:
                 self.ui.message_label.config(text=f"Order flagged as potentially fraudulent! Fraud Probability: {fraud_prob:.2f}")
                 logging.warning(f"Order {order['order_id']} flagged as fraud. Fraud Probability: {fraud_prob:.2f}")
+                cursor.execute("UPDATE orders SET fraud_flag = 1, fraud_prob = ? WHERE order_id = ?", (fraud_prob, order['order_id']))
             else:
                 self.ui.message_label.config(text="Order added to the database.")
-            
+                cursor.execute("UPDATE orders SET fraud_flag = 0, fraud_prob = ? WHERE order_id = ?", (fraud_prob, order['order_id']))
+
             # Send order confirmation email
             send_email("Order Confirmation", f"Your order with Order ID {order['order_id']} has been placed successfully.", EMAIL_ADDRESS)
+            conn.commit()
+
         except sqlite3.IntegrityError as e:
             logging.error(f"Integrity error: {e}")
             self.ui.message_label.config(text=f"Error: {e}")
@@ -353,6 +384,14 @@ class OrderProcessor:
             self.ui.message_label.config(text=f"An error occurred: {str(e)}")
         finally:
             conn.close()
+
+    def fetch_flagged_orders(self):
+        conn = self.connect_db()
+        cursor = conn.cursor()
+        cursor.execute("SELECT order_id, customer_name, date, fraud_prob FROM orders WHERE fraud_flag = 1")
+        flagged_orders = cursor.fetchall()
+        conn.close()
+        return flagged_orders
 
     def validate_order(self, order):
         # Validate order details
@@ -375,6 +414,7 @@ class OrderProcessor:
             logging.error(f"Failed to update order status: {e}")
         finally:
             conn.close()
+
 
     def fetch_orders_with_status(self):
         conn = self.connect_db()
@@ -525,6 +565,7 @@ class RealTimeDashboard:
         threading.Timer(DASHBOARD_UPDATE_INTERVAL, self.start_dashboard_updates).start()
 
 # Main Application Class (Updated)
+# Main Application Class (Updated)
 class OrderProcessingUI:
     def __init__(self, master, username, user_role):
         self.master = master
@@ -549,6 +590,11 @@ class OrderProcessingUI:
         self.dashboard_tab = ttk.Frame(notebook)
         notebook.add(self.dashboard_tab, text='Dashboard')
 
+        # Adding the Fraud Detection Tab
+        self.fraud_tab = ttk.Frame(notebook)
+        notebook.add(self.fraud_tab, text='Fraud Detection')
+        self.setup_fraud_dashboard_tab()
+
         # Adding the Chatbot Tab
         self.chatbot_tab = ttk.Frame(notebook)
         notebook.add(self.chatbot_tab, text='Chatbot')
@@ -566,6 +612,22 @@ class OrderProcessingUI:
             self.setup_analytics_tab()
         if self.dashboard_tab:
             self.setup_dashboard_tab()
+
+    def setup_fraud_dashboard_tab(self):
+        ttk.Label(self.fraud_tab, text="Flagged Fraudulent Orders").pack(pady=10)
+        columns = ("Order ID", "Customer Name", "Date", "Fraud Probability")
+        self.fraud_tree = ttk.Treeview(self.fraud_tab, columns=columns, show='headings')
+        for col in columns:
+            self.fraud_tree.heading(col, text=col)
+            self.fraud_tree.column(col, width=150, anchor=tk.CENTER)
+        self.fraud_tree.pack(fill=tk.BOTH, expand=True)
+
+        self.load_fraud_data()
+
+    def load_fraud_data(self):
+        orders = self.order_processor.fetch_flagged_orders()
+        for order in orders:
+            self.fraud_tree.insert("", tk.END, values=order)
 
     # Other setup functions...
 
@@ -836,8 +898,10 @@ class OrderProcessingUI:
 
 if __name__ == "__main__":
     init_db()
+    alter_orders_table()  # Add this line to modify the existing orders table
     add_initial_products()
     add_initial_users()
     root = tk.Tk()
     login_app = LoginUI(root)
     root.mainloop()
+

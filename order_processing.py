@@ -19,17 +19,23 @@ from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.metrics import classification_report, roc_auc_score
 from imblearn.over_sampling import SMOTE
 import joblib  # Ensure joblib is imported for model saving/loading
+from keras.models import Sequential
+from keras.layers import LSTM, Dense
+from sklearn.preprocessing import MinMaxScaler
+import statsmodels.api as sm  # For ARIMA
+from prophet import Prophet  # New way
+
 
 # Configure logging
 logging.basicConfig(filename='order_system.log', level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 
 # OpenAI API Key setup for Chatbot
-openai.api_key = 'API KEY'  # Replace with your OpenAI API key
+openai.api_key = 'API Key'  # Replace with your OpenAI API key
 
 # Email configuration
 SMTP_SERVER = 'smtp.gmail.com'
 SMTP_PORT = 587
-EMAIL_ADDRESS = 'abc@gmail.com'
+EMAIL_ADDRESS = 'bryansamjames@gmail.com'
 EMAIL_PASSWORD = 'abcd efgh ijkl mnop'  # Replace this with your actual app password
 
 # Real-time Dashboard Update Interval (in seconds)
@@ -472,42 +478,162 @@ class OrderProcessor:
         finally:
             if conn:
                 conn.close()
+            
+        # LSTM Model
+    def predict_lstm(self, product_id):
+        sales_data = self.fetch_sales_data(product_id)
+        model, scaler = train_lstm_model(sales_data)
+        predictions = lstm_predict_next_30_days(sales_data, model, scaler)
+        return predictions
 
-# Predictive Analytics for Stock Management
-def predict_stock_requirements(product_id):
-    conn = sqlite3.connect('order_system.db')
-    cursor = conn.cursor()
+    # ARIMA Model
+    def predict_arima(self, product_id):
+        sales_data = self.fetch_sales_data(product_id)
+        model_fit = train_arima_model(sales_data)
+        predictions = arima_predict_next_30_days(model_fit)
+        return predictions
+
+    # Prophet Model
+    def predict_prophet(self, product_id):
+        sales_data = self.fetch_sales_data(product_id)
+        model = train_prophet_model(sales_data)
+        predictions = prophet_predict_next_30_days(model)
+        return predictions
+
+    def fetch_sales_data(self, product_id):
+        conn = self.connect_db()
+        cursor = conn.cursor()
+
+        cursor.execute('''
+            SELECT o.date, od.quantity
+            FROM order_details od
+            JOIN orders o ON od.order_id = o.order_id
+            WHERE od.product_id = ?
+            ORDER BY o.date
+        ''', (product_id,))
+
+        data = cursor.fetchall()
+        conn.close()
+
+        # Convert to DataFrame
+        df = pd.DataFrame(data, columns=['date', 'quantity'])
+        df['date'] = pd.to_datetime(df['date'])  # Ensure dates are in correct format
+        return df
+
+
+    # Predictive Analytics for Stock Management
+    def predict_stock_requirements(product_id):
+        conn = sqlite3.connect('order_system.db')
+        cursor = conn.cursor()
+        
+        # Fetch historical sales data for the product
+        cursor.execute('''
+            SELECT od.quantity, o.date
+            FROM order_details od
+            JOIN orders o ON od.order_id = o.order_id
+            WHERE od.product_id = ?
+            ORDER BY o.date
+        ''', (product_id,))
+        
+        data = cursor.fetchall()
+        conn.close()
+        
+        if not data:
+            logging.warning(f"No historical data available for product {product_id}")
+            return None
+        
+        # Prepare the data for linear regression
+        quantities = [row[0] for row in data]
+        dates = pd.to_datetime([row[1] for row in data])
+        days = (dates - dates.min()).days.values.reshape(-1, 1)
+        
+        # Train the linear regression model
+        model = LinearRegression()
+        model.fit(days, quantities)
+        
+        # Predict future stock requirements (e.g., for the next 30 days)
+        future_days = np.arange(days.max() + 1, days.max() + 31).reshape(-1, 1)
+        future_predictions = model.predict(future_days)
+        
+        return int(np.ceil(future_predictions.sum()))
     
-    # Fetch historical sales data for the product
-    cursor.execute('''
-        SELECT od.quantity, o.date
-        FROM order_details od
-        JOIN orders o ON od.order_id = o.order_id
-        WHERE od.product_id = ?
-        ORDER BY o.date
-    ''', (product_id,))
-    
-    data = cursor.fetchall()
-    conn.close()
-    
-    if not data:
-        logging.warning(f"No historical data available for product {product_id}")
-        return None
-    
-    # Prepare the data for linear regression
-    quantities = [row[0] for row in data]
-    dates = pd.to_datetime([row[1] for row in data])
-    days = (dates - dates.min()).days.values.reshape(-1, 1)
-    
-    # Train the linear regression model
-    model = LinearRegression()
-    model.fit(days, quantities)
-    
-    # Predict future stock requirements (e.g., for the next 30 days)
-    future_days = np.arange(days.max() + 1, days.max() + 31).reshape(-1, 1)
-    future_predictions = model.predict(future_days)
-    
-    return int(np.ceil(future_predictions.sum()))
+    # LSTM Model Functions
+def train_lstm_model(data, feature='quantity'):
+    # Normalize data
+    scaler = MinMaxScaler(feature_range=(0, 1))
+    scaled_data = scaler.fit_transform(data[feature].values.reshape(-1, 1))
+
+    # Prepare input/output sequences for LSTM
+    x_train, y_train = [], []
+    sequence_length = 30  # last 30 days data
+
+    for i in range(sequence_length, len(scaled_data)):
+        x_train.append(scaled_data[i-sequence_length:i, 0])
+        y_train.append(scaled_data[i, 0])
+
+    x_train, y_train = np.array(x_train), np.array(y_train)
+    x_train = np.reshape(x_train, (x_train.shape[0], x_train.shape[1], 1))  # [samples, time steps, features]
+
+    # Build LSTM model
+    model = Sequential()
+    model.add(LSTM(units=50, return_sequences=True, input_shape=(x_train.shape[1], 1)))
+    model.add(LSTM(units=50, return_sequences=False))
+    model.add(Dense(units=25))
+    model.add(Dense(units=1))
+
+    # Compile the model
+    model.compile(optimizer='adam', loss='mean_squared_error')
+
+    # Train the model
+    model.fit(x_train, y_train, batch_size=32, epochs=20)
+
+    return model, scaler
+
+def lstm_predict_next_30_days(data, model, scaler):
+    last_30_days = data[-30:].values.reshape(-1, 1)
+    scaled_last_30_days = scaler.transform(last_30_days)
+
+    # Predict the next 30 days
+    x_input = np.reshape(scaled_last_30_days, (1, scaled_last_30_days.shape[0], 1))
+    predictions = []
+
+    for i in range(30):
+        pred = model.predict(x_input)
+        predictions.append(pred[0, 0])
+        x_input = np.append(x_input[:, 1:, :], [[pred]], axis=1)
+
+    predicted_values = scaler.inverse_transform(np.array(predictions).reshape(-1, 1))
+    return predicted_values
+
+# ARIMA Model Functions
+def train_arima_model(data, feature='quantity'):
+    # Fit ARIMA model
+    model = sm.tsa.ARIMA(data[feature].values, order=(5, 1, 0))  # Adjust order for ARIMA
+    model_fit = model.fit(disp=0)
+    return model_fit
+
+def arima_predict_next_30_days(model_fit):
+    # Predict next 30 days
+    forecast = model_fit.forecast(steps=30)[0]
+    return forecast
+
+# Prophet Model Functions
+def train_prophet_model(data):
+    # Prepare data for Prophet
+    prophet_data = data.rename(columns={'date': 'ds', 'quantity': 'y'})
+
+    # Initialize Prophet model
+    model = Prophet()
+    model.fit(prophet_data)
+
+    return model
+
+def prophet_predict_next_30_days(model):
+    # Predict future values for the next 30 days
+    future = model.make_future_dataframe(periods=30)
+    forecast = model.predict(future)
+    return forecast[['ds', 'yhat']][-30:]  # Return the last 30 days of prediction
+
 
 # Real-time Dashboard Class
 # Real-time Dashboard Class

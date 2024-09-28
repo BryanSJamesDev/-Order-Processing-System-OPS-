@@ -24,6 +24,8 @@ from keras.layers import LSTM, Dense
 from sklearn.preprocessing import MinMaxScaler
 import statsmodels.api as sm  # For ARIMA
 from prophet import Prophet  # New way
+import hashlib
+import time
 
 
 # Configure logging
@@ -44,6 +46,46 @@ DASHBOARD_UPDATE_INTERVAL = 10
 # Fraud Detection Model Path
 FRAUD_MODEL_PATH = 'fraud_detection_model.pkl'  # Add this for fraud detection
 
+
+class Block:
+    def __init__(self, index, timestamp, data, previous_hash=''):
+        self.index = index
+        self.timestamp = timestamp
+        self.data = data  # Order details
+        self.previous_hash = previous_hash
+        self.hash = self.calculate_hash()
+
+    def calculate_hash(self):
+        block_string = f"{self.index}{self.timestamp}{self.data}{self.previous_hash}".encode()
+        return hashlib.sha256(block_string).hexdigest()
+
+class Blockchain:
+    def __init__(self):
+        self.chain = [self.create_genesis_block()]
+
+    def create_genesis_block(self):
+        return Block(0, time.time(), "Genesis Block", "0")
+
+    def get_latest_block(self):
+        return self.chain[-1]
+
+    def add_block(self, new_block):
+        new_block.previous_hash = self.get_latest_block().hash
+        new_block.hash = new_block.calculate_hash()
+        self.chain.append(new_block)
+
+    def is_chain_valid(self):
+        for i in range(1, len(self.chain)):
+            current_block = self.chain[i]
+            previous_block = self.chain[i - 1]
+
+            if current_block.hash != current_block.calculate_hash():
+                return False
+            if current_block.previous_hash != previous_block.hash:
+                return False
+        return True
+    
+    
 # Function to send emails
 def send_email(subject, body, to_address):
     msg = MIMEMultipart()
@@ -308,6 +350,7 @@ class OrderProcessor:
         self.ui = ui
         self.db_path = 'order_system.db'
         self.fraud_model = load_fraud_detection_model()  # Load fraud detection model
+        self.blockchain = Blockchain()
 
     def connect_db(self):
         conn = sqlite3.connect(self.db_path)
@@ -380,6 +423,22 @@ class OrderProcessor:
 
             # Send order confirmation email
             send_email("Order Confirmation", f"Your order with Order ID {order['order_id']} has been placed successfully.", EMAIL_ADDRESS)
+            
+            # Add high-value order to the blockchain
+            total_price = self.calculate_order_total(order['order_id'], cursor)
+            if total_price > 1000:  # Define high-value threshold (e.g., $1000)
+                block_data = {
+                    'order_id': order['order_id'],
+                    'customer_name': order['customer_name'],
+                    'total_price': total_price,
+                    'products': order['product_id']
+                }
+                new_block = Block(len(self.blockchain.chain), time.time(), str(block_data))
+                self.blockchain.add_block(new_block)
+                logging.info(f"Order {order['order_id']} added to blockchain.")
+                
+                self.ui.update_blockchain_ledger()
+            
             conn.commit()
 
         except sqlite3.IntegrityError as e:
@@ -390,6 +449,17 @@ class OrderProcessor:
             self.ui.message_label.config(text=f"An error occurred: {str(e)}")
         finally:
             conn.close()
+            
+    def calculate_order_total(self, order_id, cursor):
+        # Calculate the total price of the order
+        cursor.execute('''
+            SELECT SUM(od.quantity * p.price) 
+            FROM order_details od
+            JOIN products p ON od.product_id = p.product_id
+            WHERE od.order_id = ?
+        ''', (order_id,))
+        total_price = cursor.fetchone()[0]
+        return total_price if total_price else 0
 
     def fetch_flagged_orders(self):
         conn = self.connect_db()
@@ -460,6 +530,7 @@ class OrderProcessor:
         finally:
             if conn:
                 conn.close()
+
 
     def generate_sales_report(self):
         conn = self.connect_db()
@@ -705,6 +776,8 @@ class OrderProcessingUI:
         self.order_tab = ttk.Frame(notebook)
         self.inventory_tab = ttk.Frame(notebook)
         self.analytics_tab = None
+        
+
 
         if self.user_role == 'admin':
             self.admin_tab = ttk.Frame(notebook)
@@ -715,6 +788,11 @@ class OrderProcessingUI:
         
         self.dashboard_tab = ttk.Frame(notebook)
         notebook.add(self.dashboard_tab, text='Dashboard')
+        
+        # Adding the Blockchain Ledger Tab
+        self.blockchain_tab = ttk.Frame(notebook)
+        notebook.add(self.blockchain_tab, text='Blockchain Ledger')
+        self.setup_blockchain_tab()
 
         # Adding the Fraud Detection Tab
         self.fraud_tab = ttk.Frame(notebook)
@@ -738,6 +816,39 @@ class OrderProcessingUI:
             self.setup_analytics_tab()
         if self.dashboard_tab:
             self.setup_dashboard_tab()
+            
+    def setup_blockchain_tab(self):
+        ttk.Label(self.blockchain_tab, text="Blockchain Ledger").pack(pady=10)
+        columns = ("Block Index", "Timestamp", "Order Data", "Previous Hash", "Hash")
+        self.blockchain_tree = ttk.Treeview(self.blockchain_tab, columns=columns, show='headings')
+        for col in columns:
+            self.blockchain_tree.heading(col, text=col)
+            self.blockchain_tree.column(col, width=150, anchor=tk.CENTER)
+        self.blockchain_tree.pack(fill=tk.BOTH, expand=True)
+
+        self.load_blockchain_data()
+        
+        self.update_blockchain_ledger()
+
+    def load_blockchain_data(self):
+        for block in self.order_processor.blockchain.chain:
+            self.blockchain_tree.insert("", tk.END, values=(block.index, block.timestamp, block.data, block.previous_hash, block.hash))
+            
+    def update_blockchain_ledger(self):
+    # Clear existing blockchain ledger treeview
+        for row in self.blockchain_tree.get_children():
+            self.blockchain_tree.delete(row)
+    
+        # Insert all blocks into the treeview
+        for block in self.order_processor.blockchain.chain:
+            self.blockchain_tree.insert("", tk.END, values=(
+                block.index,
+                block.timestamp,
+                block.data,
+                block.previous_hash,
+                block.hash
+            ))
+
 
     def setup_fraud_dashboard_tab(self):
         ttk.Label(self.fraud_tab, text="Flagged Fraudulent Orders").pack(pady=10)

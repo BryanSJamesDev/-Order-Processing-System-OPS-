@@ -1,0 +1,76 @@
+import sqlite3
+
+def connect_db():
+    conn = sqlite3.connect('order_system.db')
+    conn.execute('PRAGMA foreign_keys = ON')
+    return conn
+
+def generate_order_id():
+    conn = connect_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT MAX(CAST(order_id AS INTEGER)) FROM orders")
+    max_id = cursor.fetchone()[0]
+    conn.close()
+    return int(max_id) + 1 if max_id else 1
+
+def add_order(order):
+    conn = connect_db()
+    try:
+        cursor = conn.cursor()
+        print(f"Inserting order: {order}")
+        cursor.execute("INSERT INTO orders (order_id, customer_name, date, status) VALUES (?, ?, datetime('now'), 'Processing')",
+                       (order['order_id'], order['customer_name']))
+        cursor.execute("INSERT INTO order_details (order_id, product_id, quantity) VALUES (?, ?, ?)",
+                       (order['order_id'], order['product_id'], order['quantity']))
+        
+        cursor.execute("SELECT stock FROM products WHERE product_id = ?", (order['product_id'],))
+        before_stock = cursor.fetchone()
+        print(f"Stock for product {order['product_id']} before reduction: {before_stock[0]}")
+        
+        # Reduce stock
+        cursor.execute("SELECT stock FROM products WHERE product_id = ?", (order['product_id'],))
+        result = cursor.fetchone()
+        if result:
+            current_stock = result[0]
+            if current_stock >= int(order['quantity']):
+                new_stock = current_stock - int(order['quantity'])
+                cursor.execute("UPDATE products SET stock = ? WHERE product_id = ?", (new_stock, order['product_id']))
+                cursor.execute("SELECT stock FROM products WHERE product_id = ?", (order['product_id'],))
+                updated_result = cursor.fetchone()
+                print(f"Updated stock for product {order['product_id']}: {updated_result[0]}")
+            else:
+                print("Not enough stock available.")
+        else:
+            print(f"No stock information found for product {order['product_id']}.")
+
+        cursor.execute("SELECT stock FROM products WHERE product_id = ?", (order['product_id'],))
+        after_stock = cursor.fetchone()
+        print(f"Stock for product {order['product_id']} after reduction: {after_stock[0]}")
+        
+        conn.commit()
+        print(f"Order {order['order_id']} added to orders and order_details tables and stock reduced.")
+    except sqlite3.IntegrityError as e:
+        print(f"Error: {e}")
+    except Exception as e:
+        print(f"An error occurred: {str(e)}")
+    finally:
+        conn.close()
+
+def clear_orders():
+    conn = connect_db()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM order_details")
+    cursor.execute("DELETE FROM orders")
+    conn.commit()
+    conn.close()
+
+# Clear existing orders to start fresh
+clear_orders()
+
+# Generate new order IDs
+order_id_1 = generate_order_id()
+order_id_2 = generate_order_id()
+
+# Test the order processing function
+add_order({'order_id': order_id_1, 'customer_name': 'Bob', 'product_id': 'P001', 'quantity': '10'})
+add_order({'order_id': generate_order_id(), 'customer_name': 'Alice', 'product_id': 'P002', 'quantity': '30'})

@@ -11,9 +11,9 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from sklearn.linear_model import LinearRegression
 import numpy as np
 import threading
-import seaborn as sns  # Ensure seaborn is imported
+import seaborn as sns  
 import time
-import openai  # Ensure openai is imported for Chatbot
+import openai  
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.metrics import classification_report, roc_auc_score
@@ -22,8 +22,8 @@ import joblib  # Ensure joblib is imported for model saving/loading
 from keras.models import Sequential
 from keras.layers import LSTM, Dense
 from sklearn.preprocessing import MinMaxScaler
-import statsmodels.api as sm  # For ARIMA
-from prophet import Prophet  # New way
+import statsmodels.api as sm  
+from prophet import Prophet  
 import hashlib
 import time
 

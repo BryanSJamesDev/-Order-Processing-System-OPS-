@@ -1,0 +1,17 @@
+sqlite3
+tkinter
+matplotlib
+pandas
+logging
+smtplib
+email
+werkzeug
+scikit-learn
+numpy
+seaborn
+openai
+joblib
+keras
+statsmodels
+prophet
+python-dotenv

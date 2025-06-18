@@ -1,6 +1,6 @@
 import sqlite3
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, messagebox, filedialog
 import matplotlib.pyplot as plt
 import pandas as pd
 import logging
@@ -8,50 +8,63 @@ import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from werkzeug.security import generate_password_hash, check_password_hash
-from sklearn.linear_model import LinearRegression
 import numpy as np
 import threading
-import seaborn as sns  
 import time
-import openai  
+import hashlib
+import re
+import imaplib
+import email
+import random  
+import os      
+import datetime
+
+# Machine learning and forecasting imports
+from sklearn.linear_model import LinearRegression
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.metrics import classification_report, roc_auc_score
 from imblearn.over_sampling import SMOTE
-import joblib  # Ensure joblib is imported for model saving/loading
+import joblib  
 from keras.models import Sequential
 from keras.layers import LSTM, Dense
 from sklearn.preprocessing import MinMaxScaler
-import statsmodels.api as sm  
-from prophet import Prophet  
-import hashlib
-import time
+import statsmodels.api as sm
+from prophet import Prophet
+import openai
 
+# ------------------------------
+# CONFIGURATION & LOGGING SETUP
+# ------------------------------
+logging.basicConfig(
+    filename='order_system.log',
+    level=logging.INFO,
+    format='%(asctime)s %(levelname)s %(message)s'
+)
 
-# Configure logging
-logging.basicConfig(filename='order_system.log', level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
+openai.api_key = "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"  
 
-# OpenAI API Key setup for Chatbot
-openai.api_key = 'API Key'  # Replace with your OpenAI API key
-
-# Email configuration
 SMTP_SERVER = 'smtp.gmail.com'
 SMTP_PORT = 587
 EMAIL_ADDRESS = 'bryansamjames@gmail.com'
-EMAIL_PASSWORD = 'abcd efgh ijkl mnop'  # Replace this with your actual app password
+EMAIL_PASSWORD = 'lctn vhdt fppo awig'
 
-# Real-time Dashboard Update Interval (in seconds)
-DASHBOARD_UPDATE_INTERVAL = 10
+IMAP_SERVER = 'imap.gmail.com'
+IMAP_PORT = 993
+IMAP_USER = 'bryansamjames@gmail.com'
+IMAP_PASS = 'YOUR_IMAP_PASSWORD'
 
-# Fraud Detection Model Path
-FRAUD_MODEL_PATH = 'fraud_detection_model.pkl'  # Add this for fraud detection
+DASHBOARD_UPDATE_INTERVAL = 10  # seconds
+FRAUD_MODEL_PATH = 'fraud_detection_model.pkl'
 
-
+# ------------------------------
+# BLOCKCHAIN CLASSES
+# ------------------------------
 class Block:
     def __init__(self, index, timestamp, data, previous_hash=''):
         self.index = index
         self.timestamp = timestamp
-        self.data = data  # Order details
+        self.data = data  
         self.previous_hash = previous_hash
         self.hash = self.calculate_hash()
 
@@ -76,17 +89,15 @@ class Blockchain:
 
     def is_chain_valid(self):
         for i in range(1, len(self.chain)):
-            current_block = self.chain[i]
-            previous_block = self.chain[i - 1]
-
-            if current_block.hash != current_block.calculate_hash():
-                return False
-            if current_block.previous_hash != previous_block.hash:
+            current = self.chain[i]
+            previous = self.chain[i - 1]
+            if current.hash != current.calculate_hash() or current.previous_hash != previous.hash:
                 return False
         return True
-    
-    
-# Function to send emails
+
+# ------------------------------
+# EMAIL FUNCTIONS
+# ------------------------------
 def send_email(subject, body, to_address):
     msg = MIMEMultipart()
     msg['From'] = EMAIL_ADDRESS
@@ -102,102 +113,141 @@ def send_email(subject, body, to_address):
     except Exception as e:
         logging.error(f"Failed to send email: {e}")
 
-# Initialize Database
+def fetch_incoming_orders_from_email():
+    orders_list = []
+    try:
+        mail = imaplib.IMAP4_SSL(IMAP_SERVER, IMAP_PORT)
+        mail.login(IMAP_USER, IMAP_PASS)
+        mail.select('inbox')
+        status, data = mail.search(None, '(UNSEEN SUBJECT "New Order")')
+        mail_ids = data[0]
+        id_list = mail_ids.split()
+        for num in id_list:
+            status, msg_data = mail.fetch(num, '(RFC822)')
+            for response_part in msg_data:
+                if isinstance(response_part, tuple):
+                    raw_email = response_part[1]
+                    msg = email.message_from_bytes(raw_email)
+                    body = ""
+                    if msg.is_multipart():
+                        for part in msg.walk():
+                            if part.get_content_type() == 'text/plain':
+                                body = part.get_payload(decode=True).decode()
+                                break
+                    else:
+                        body = msg.get_payload(decode=True).decode()
+                    customer_match = re.search(r'Customer:\s*(.*)', body)
+                    product_match = re.search(r'Product:\s*(.*)', body)
+                    quantity_match = re.search(r'Quantity:\s*(\d+)', body)
+                    if customer_match and product_match and quantity_match:
+                        order_data = {
+                            'customer_name': customer_match.group(1).strip(),
+                            'product_id': product_match.group(1).strip(),
+                            'quantity': quantity_match.group(1).strip()
+                        }
+                        orders_list.append(order_data)
+                        logging.info(f"Parsed order from email: {order_data}")
+        mail.close()
+        mail.logout()
+    except Exception as e:
+        logging.error(f"Error fetching email orders: {e}")
+    return orders_list
+
+# ------------------------------
+# DATABASE INITIALIZATION
+# ------------------------------
 def init_db():
-    conn = sqlite3.connect('order_system.db')
-    c = conn.cursor()
-    
-    # Create users table
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE,
-            password TEXT,
-            role TEXT
-        )
-    ''')
-    
-    # Create user_registrations table
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS user_registrations (
-            registration_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE,
-            password TEXT,
-            email TEXT,
-            role TEXT,
-            status TEXT
-        )
-    ''')
-    
-    # Create products table
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS products (
-            product_id TEXT PRIMARY KEY,
-            name TEXT,
-            price REAL,
-            stock INTEGER
-        )
-    ''')
-    
-    # Create orders table with fraud_flag and fraud_prob columns
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS orders (
-            order_id TEXT PRIMARY KEY,
-            customer_name TEXT,
-            date TEXT,
-            status TEXT,
-            order_status TEXT DEFAULT 'Processing',
-            fraud_flag INTEGER DEFAULT 0,  -- Add fraud_flag (0 for non-fraud, 1 for fraud)
-            fraud_prob REAL DEFAULT 0.0    -- Add fraud_prob (Probability of fraud)
-        )
-    ''')
-
-    # Create order_details table
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS order_details (
-            order_id TEXT,
-            product_id TEXT,
-            quantity INTEGER,
-            FOREIGN KEY(order_id) REFERENCES orders(order_id),
-            FOREIGN KEY(product_id) REFERENCES products(product_id)
-        )
-    ''')
-    
-    conn.commit()
-    conn.close()
-    logging.info("Database initialized with fraud detection columns.")
-
+    with sqlite3.connect('order_system.db') as conn:
+        c = conn.cursor()
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                user_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE,
+                password TEXT,
+                role TEXT
+            )
+        ''')
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS user_registrations (
+                registration_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE,
+                password TEXT,
+                email TEXT,
+                role TEXT,
+                status TEXT
+            )
+        ''')
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS products (
+                product_id TEXT PRIMARY KEY,
+                name TEXT,
+                price REAL,
+                stock INTEGER
+            )
+        ''')
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS orders (
+                order_id TEXT PRIMARY KEY,
+                customer_name TEXT,
+                date TEXT,
+                status TEXT,
+                order_status TEXT DEFAULT 'Processing',
+                fraud_flag INTEGER DEFAULT 0,
+                fraud_prob REAL DEFAULT 0.0
+            )
+        ''')
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS order_details (
+                order_id TEXT,
+                product_id TEXT,
+                quantity INTEGER,
+                FOREIGN KEY(order_id) REFERENCES orders(order_id),
+                FOREIGN KEY(product_id) REFERENCES products(product_id)
+            )
+        ''')
+        conn.commit()
+    logging.info("Database initialized.")
 
 def alter_orders_table():
-    conn = sqlite3.connect('order_system.db')
-    c = conn.cursor()
     try:
-        c.execute("ALTER TABLE orders ADD COLUMN fraud_flag INTEGER DEFAULT 0")
-        c.execute("ALTER TABLE orders ADD COLUMN fraud_prob REAL DEFAULT 0.0")
-        logging.info("Added fraud_flag and fraud_prob columns to the orders table.")
+        with sqlite3.connect('order_system.db') as conn:
+            c = conn.cursor()
+            c.execute("ALTER TABLE orders ADD COLUMN fraud_flag INTEGER DEFAULT 0")
+            c.execute("ALTER TABLE orders ADD COLUMN fraud_prob REAL DEFAULT 0.0")
+            conn.commit()
+        logging.info("Orders table altered for fraud detection.")
     except sqlite3.OperationalError as e:
-        logging.warning(f"Columns already exist or failed to add: {e}")
-    conn.commit()
-    conn.close()
+        logging.warning(f"Alter table skipped: {e}")
 
-
-# Populate initial product data
+# ------------------------------
+# ADD INITIAL PRODUCTS (HVAC/AC EQUIPMENT)
+# ------------------------------
 def add_initial_products():
+    # Updated HVAC/AC product list with lower prices
     products = [
-        ('P001', 'Widget A', 19.99, 100),
-        ('P002', 'Widget B', 25.99, 200),
-        ('P003', 'Widget C', 9.99, 150)
+        ('HV001', 'Central Air Conditioning System', 1500.00, 10),
+        ('HV002', 'Ductless Mini Split AC', 700.00, 20),
+        ('HV003', 'Industrial HVAC Fan', 300.00, 15),
+        ('HV004', 'HVAC Control Panel', 500.00, 8),
+        ('HV005', 'Water Cooled AC Unit', 2000.00, 4),
+        ('HV006', 'Air Handling Unit (AHU)', 1200.00, 7),
+        ('HV007', 'Heat Exchanger Unit', 600.00, 12),
+        ('HV008', 'Ventilation Fan', 200.00, 25),
+        ('HV009', 'Chiller System', 2500.00, 5),
+        ('HV010', 'Energy Recovery Ventilator', 1500.00, 6)
     ]
     try:
         with sqlite3.connect('order_system.db') as conn:
             c = conn.cursor()
-            c.executemany('INSERT OR IGNORE INTO products (product_id, name, price, stock) VALUES (?, ?, ?, ?)', products)
+            c.executemany("""
+                INSERT OR IGNORE INTO products (product_id, name, price, stock)
+                VALUES (?, ?, ?, ?)
+            """, products)
             conn.commit()
-        logging.info("Initial products added")
-    except sqlite3.OperationalError as e:
-        logging.error(f"Error adding initial products: {e}")
+        logging.info("Initial HVAC products added with updated lower prices.")
+    except Exception as e:
+        logging.error(f"Error adding products: {e}")
 
-# Populate initial user data
 def add_initial_users():
     users = [
         ('admin', generate_password_hash('password'), 'admin'),
@@ -207,71 +257,192 @@ def add_initial_users():
     try:
         with sqlite3.connect('order_system.db') as conn:
             c = conn.cursor()
-            c.executemany('INSERT OR IGNORE INTO users (username, password, role) VALUES (?, ?, ?)', users)
+            c.executemany("""
+                INSERT OR IGNORE INTO users (username, password, role)
+                VALUES (?, ?, ?)
+            """, users)
             conn.commit()
-        logging.info("Initial users added")
-    except sqlite3.OperationalError as e:
-        logging.error(f"Error adding initial users: {e}")
-
-# Chatbot integration with OpenAI
-def chatbot_response(prompt):
-    try:
-        response = openai.Completion.create(
-            model="text-davinci-003",  # Use the ChatGPT model
-            prompt=prompt,
-            max_tokens=150
-        )
-        return response.choices[0].text.strip()
+        logging.info("Initial users added.")
     except Exception as e:
-        logging.error(f"Error with OpenAI API: {e}")
-        return "There was an issue connecting to the chatbot service. Please try again."
+        logging.error(f"Error adding users: {e}")
 
-# Chatbot Tab UI
+# ------------------------------
+# BATCH ORDER INSERTION: CLEAR AND REPOLLUATE ORDERS
+# ------------------------------
+# A larger pool of first and last names for realistic customer names.
+FIRST_NAMES = [
+    "James", "Mary", "Robert", "Patricia", "John", "Jennifer", "Michael", "Linda",
+    "William", "Elizabeth", "David", "Barbara", "Richard", "Susan", "Joseph", "Jessica",
+    "Thomas", "Sarah", "Charles", "Karen", "Christopher", "Nancy", "Daniel", "Lisa",
+    "Matthew", "Betty", "Anthony", "Margaret", "Donald", "Sandra", "Mark", "Ashley",
+    "Paul", "Kimberly", "Steven", "Emily", "Andrew", "Donna", "Kenneth", "Michelle",
+    "George", "Dorothy", "Joshua", "Carol", "Kevin", "Amanda", "Brian", "Melissa",
+    "Edward", "Deborah", "Ronald", "Stephanie", "Timothy", "Rebecca", "Jason", "Laura"
+]
+
+LAST_NAMES = [
+    "Smith", "Johnson", "Williams", "Jones", "Brown", "Davis", "Miller", "Wilson",
+    "Moore", "Taylor", "Anderson", "Thomas", "Jackson", "White", "Harris", "Martin",
+    "Thompson", "Garcia", "Martinez", "Robinson", "Clark", "Rodriguez", "Lewis", "Lee",
+    "Walker", "Hall", "Allen", "Young", "King", "Wright", "Scott", "Torres",
+    "Nguyen", "Hill", "Flores", "Green", "Adams", "Nelson", "Baker", "Rivera", "Campbell",
+    "Mitchell", "Carter", "Roberts", "Gomez", "Phillips", "Evans", "Turner", "Diaz"
+]
+
+
+def clear_and_populate_orders(num_orders=5000):
+    """
+    Clears all existing orders (and their order_details) and repopulates
+    the orders table with 'num_orders' new orders. Customer names are generated
+    from a large pool of first and last names, orders use only the HVAC products,
+    and order datetimes are randomized (date and time) between January 1, 2025
+    and April 14, 2025.
+    """
+    db_path = 'order_system.db'
+    
+    # Helper function to generate a random datetime between two datetime objects
+    def random_datetime(start_dt, end_dt):
+        delta = end_dt - start_dt
+        int_delta = int(delta.total_seconds())
+        random_second_offset = random.randrange(int_delta + 1)
+        return start_dt + datetime.timedelta(seconds=random_second_offset)
+    
+    # Define the datetime range (inclusive)
+    start_dt = datetime.datetime(2025, 1, 1, 0, 0, 0)
+    end_dt = datetime.datetime(2025, 4, 14, 23, 59, 59)
+
+    try:
+        with sqlite3.connect(db_path) as conn:
+            cursor = conn.cursor()
+            # Clear existing orders
+            cursor.execute("DELETE FROM order_details")
+            cursor.execute("DELETE FROM orders")
+            conn.commit()
+            print("Cleared existing orders and order_details.")
+
+            # Get current product IDs from products table that are HVAC products (start with 'HV')
+            cursor.execute("SELECT product_id FROM products WHERE product_id LIKE 'HV%'")
+            product_ids = [row[0] for row in cursor.fetchall()]
+
+            if not product_ids:
+                print("No HVAC products found. Please run add_initial_products() first.")
+                return
+
+            # Start order IDs at 1 (since tables are now empty)
+            current_id = 0
+            for _ in range(num_orders):
+                current_id += 1
+                order_id_str = str(current_id)
+                first_name = random.choice(FIRST_NAMES)
+                last_name = random.choice(LAST_NAMES)
+                customer_name = f"{first_name} {last_name}"
+                product_id = random.choice(product_ids)
+                quantity = random.randint(1, 10)
+
+                # Generate a random datetime within the defined range
+                order_dt = random_datetime(start_dt, end_dt)
+                # Format it to include both date and time
+                order_date_str = order_dt.strftime('%Y-%m-%d %H:%M:%S')
+
+                cursor.execute(
+                    "INSERT INTO orders (order_id, customer_name, date, status) VALUES (?, ?, ?, 'Processing')",
+                    (order_id_str, customer_name, order_date_str)
+                )
+                cursor.execute(
+                    "INSERT INTO order_details (order_id, product_id, quantity) VALUES (?, ?, ?)",
+                    (order_id_str, product_id, quantity)
+                )
+            conn.commit()
+            print(f"Inserted {num_orders} new random orders successfully.")
+    except Exception as e:
+        logging.error(f"Error in clear_and_populate_orders: {e}")
+        print(f"Error clearing and populating orders: {e}")
+
+
+
+# ------------------------------
+# CHATBOT FUNCTIONALITY
+# ------------------------------
+def chatbot_response(prompt):
+    """
+    Uses openai.ChatCompletion for chatbot responses.
+    """
+    try:
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=150,
+            temperature=0.7
+        )
+        return response.choices[0].message["content"].strip()
+    except Exception as e:
+        logging.error(f"OpenAI API error: {e}")
+        return "Error connecting to chatbot service."
+
 class ChatbotTab:
     def __init__(self, master):
         self.master = master
         self.setup_ui()
 
     def setup_ui(self):
-        # UI elements for chatbot interaction
-        self.label = ttk.Label(self.master, text="Ask a question:", font=("Helvetica", 14))
-        self.label.pack(pady=10)
-
-        self.user_input = tk.Entry(self.master, width=50)
-        self.user_input.pack(pady=10)
-
-        self.submit_button = ttk.Button(self.master, text="Ask", command=self.ask_chatbot)
-        self.submit_button.pack(pady=10)
-
-        self.response_area = tk.Text(self.master, wrap="word", height=10, width=60)
-        self.response_area.pack(pady=10)
+        self.frame = ttk.Frame(self.master)
+        self.frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        ttk.Label(self.frame, text="Ask a question:", font=("Helvetica", 14)).grid(row=0, column=0, sticky="w")
+        self.user_input = ttk.Entry(self.frame, width=50)
+        self.user_input.grid(row=1, column=0, pady=5)
+        self.submit_button = ttk.Button(self.frame, text="Ask", command=self.ask_chatbot)
+        self.submit_button.grid(row=1, column=1, padx=5)
+        self.response_area = tk.Text(self.frame, wrap="word", height=10, width=60)
+        self.response_area.grid(row=2, column=0, columnspan=2, pady=10)
 
     def ask_chatbot(self):
-        user_query = self.user_input.get()
-        if user_query:
-            response = chatbot_response(user_query)
+        prompt = self.user_input.get()
+        if prompt:
+            response = chatbot_response(prompt)
             self.response_area.delete("1.0", tk.END)
             self.response_area.insert(tk.END, f"Chatbot: {response}\n")
         else:
             self.response_area.delete("1.0", tk.END)
             self.response_area.insert(tk.END, "Please enter a question.\n")
 
-# Fraud Detection Functions
-def load_fraud_detection_model():
+# ------------------------------
+# FRAUD DETECTION & FEATURE ENGINEERING
+# ------------------------------
+
+def get_product_price(product_id):
     """
-    Load the pre-trained fraud detection model.
+    Given a product ID, retrieves the actual product price from the products table.
+    Returns the price as a float or 0.0 if not found.
     """
     try:
-        model = joblib.load(FRAUD_MODEL_PATH)
-        logging.info("Fraud detection model loaded successfully.")
-        return model
+        with sqlite3.connect('order_system.db') as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT price FROM products WHERE product_id = ?", (product_id,))
+            result = cursor.fetchone()
+        if result:
+            return float(result[0])
+        else:
+            logging.warning(f"Price not found for product_id: {product_id}")
+            return 0.0
     except Exception as e:
-        logging.error(f"Error loading fraud detection model: {e}")
-        return None
+        logging.error(f"Error fetching price for product_id {product_id}: {e}")
+        return 0.0
 
 def feature_engineering(df):
     """
-    Perform feature engineering on the transaction data.
+    Computes aggregated features required for fraud detection.
+    
+    Assumes the following columns exist in the DataFrame:
+      - transaction_amount
+      - customer_id
+      - transaction_id
+      - transaction_date
+     
+    Creates new columns:
+      - total_customer_spent: Total money spent by the customer.
+      - total_customer_orders: Count of orders by the customer.
+      - avg_transaction_amount: Average amount per order.
+      - order_frequency: Difference in days between the customer's latest and earliest order.
     """
     df['total_customer_spent'] = df.groupby('customer_id')['transaction_amount'].transform('sum')
     df['total_customer_orders'] = df.groupby('customer_id')['transaction_id'].transform('count')
@@ -279,865 +450,954 @@ def feature_engineering(df):
     df['order_frequency'] = df.groupby('customer_id')['transaction_date'].transform(lambda x: (x.max() - x.min()).days)
     return df
 
-def detect_fraud(order_details, model):
+def load_fraud_detection_model():
     """
-    Detect if an order is potentially fraudulent using the trained model.
+    Loads and returns the pre-trained fraud detection model from FRAUD_MODEL_PATH.
     """
     try:
-        # Convert order details into a DataFrame for prediction
-        order_df = pd.DataFrame([order_details])
-
-        # Perform feature engineering
-        order_df = feature_engineering(order_df)
-
-        # Select features used in training the model
-        features = ['total_customer_spent', 'total_customer_orders', 'avg_transaction_amount', 'order_frequency', 'transaction_amount']
-
-        # Predict fraud
-        fraud_prob = model.predict_proba(order_df[features])[:, 1]  # Probability of fraud
-        is_fraud = fraud_prob >= 0.9  # Use 0.9 threshold for flagging fraud
-        return is_fraud[0], fraud_prob[0]
+        model = joblib.load(FRAUD_MODEL_PATH)
+        logging.info("Fraud detection model loaded.")
+        return model
     except Exception as e:
-        logging.error(f"Error detecting fraud: {e}")
+        logging.error(f"Error loading fraud model: {e}")
+        return None
+
+def detect_fraud(order_details, model):
+    """
+    Receives order details, computes features using the actual product price, and uses the
+    pre-trained model to predict fraud probability.
+    
+    Steps:
+      - Create a DataFrame from order_details.
+      - Retrieve the real product price via get_product_price() and compute:
+            transaction_amount = (actual product price) * (quantity)
+      - Set customer_id (from order_details['customer_name']), transaction_id (from order_details['order_id']),
+        and transaction_date (current timestamp).
+      - Call feature_engineering() to compute aggregated features.
+      - Predict fraud probability using features:
+            ['total_customer_spent', 'total_customer_orders', 'avg_transaction_amount', 'order_frequency', 'transaction_amount']
+      - Flag the order as fraudulent if the predicted probability is >= 0.9.
+    
+    Returns:
+      (is_fraud, fraud_prob): Tuple where is_fraud is True if fraud_prob >= 0.9, along with the fraud probability.
+    """
+    if not model:
+        return False, 0.0
+    try:
+        order_df = pd.DataFrame([order_details])
+        # Retrieve the real product price and compute transaction_amount
+        price = get_product_price(order_details.get('product_id'))
+        quantity = float(order_details.get('quantity', 1))
+        order_df['transaction_amount'] = price * quantity
+        
+        # Set additional required fields
+        order_df['customer_id'] = order_details['customer_name']
+        order_df['transaction_id'] = order_details['order_id']
+        order_df['transaction_date'] = pd.to_datetime('now')
+        
+        # Compute aggregated features
+        order_df = feature_engineering(order_df)
+        
+        features = ['total_customer_spent', 'total_customer_orders', 'avg_transaction_amount', 'order_frequency', 'transaction_amount']
+        fraud_prob = model.predict_proba(order_df[features])[:, 1]
+        is_fraud = fraud_prob >= 0.9
+        
+        return bool(is_fraud[0]), fraud_prob[0]
+    except Exception as e:
+        logging.error(f"Fraud detection error: {e}")
         return False, 0.0
 
-# Login UI Class
-class LoginUI:
-    def __init__(self, master):
-        self.master = master
-        self.master.title("Login")
-        self.master.geometry("300x200")
 
-        ttk.Label(master, text="Username:").pack()
-        self.username_entry = ttk.Entry(master)
-        self.username_entry.pack()
+# ------------------------------
+# FORECASTING UTILITIES (LSTM, ARIMA, Prophet)
+# ------------------------------
+def train_lstm_model(data, feature='quantity'):
+    if data.empty:
+        return None, None
+    data = data.reset_index(drop=True)
+    data[feature].fillna(0, inplace=True)
+    scaler = MinMaxScaler(feature_range=(0, 1))
+    scaled_data = scaler.fit_transform(data[feature].values.reshape(-1, 1))
+    x_train, y_train = [], []
+    sequence_length = 30
+    for i in range(sequence_length, len(scaled_data)):
+        x_train.append(scaled_data[i-sequence_length:i, 0])
+        y_train.append(scaled_data[i, 0])
+    x_train, y_train = np.array(x_train), np.array(y_train)
+    x_train = np.reshape(x_train, (x_train.shape[0], x_train.shape[1], 1))
+    model = Sequential()
+    model.add(LSTM(units=50, return_sequences=True, input_shape=(x_train.shape[1], 1)))
+    model.add(LSTM(units=50, return_sequences=False))
+    model.add(Dense(units=25))
+    model.add(Dense(units=1))
+    model.compile(optimizer='adam', loss='mean_squared_error')
+    model.fit(x_train, y_train, batch_size=32, epochs=5, verbose=0)
+    return model, scaler
 
-        ttk.Label(master, text="Password:").pack()
-        self.password_entry = ttk.Entry(master, show="*")
-        self.password_entry.pack()
+def lstm_predict_next_30_days(data, model, scaler):
+    if model is None or scaler is None or data.empty:
+        return []
+    last_30 = data.iloc[-30:].values.reshape(-1, 1)
+    if len(last_30) < 30:
+        return []
+    scaled_last_30 = scaler.transform(last_30)
+    x_input = np.reshape(scaled_last_30, (1, scaled_last_30.shape[0], 1))
+    predictions = []
+    for i in range(30):
+        pred = model.predict(x_input, verbose=0)
+        predictions.append(pred[0, 0])
+        x_input = np.append(x_input[:,1:,:], [[pred]], axis=1)
+    predicted_values = scaler.inverse_transform(np.array(predictions).reshape(-1,1))
+    return predicted_values.ravel().tolist()
 
-        ttk.Button(master, text="Login", command=self.login).pack()
-        self.message_label = ttk.Label(master, text="")
-        self.message_label.pack()
+def train_arima_model(data, feature='quantity'):
+    if data.empty:
+        return None
+    data = data.set_index('date').asfreq('D').fillna(0)
+    model = sm.tsa.ARIMA(data[feature], order=(5,1,0))
+    model_fit = model.fit(disp=0)
+    return model_fit
 
-    def login(self):
-        username = self.username_entry.get()
-        password = self.password_entry.get()
+def arima_predict_next_30_days(model_fit):
+    if not model_fit:
+        return []
+    forecast = model_fit.forecast(steps=30)[0]
+    return forecast.tolist()
 
-        if self.authenticate(username, password):
-            self.master.destroy()
-            root = tk.Tk()
-            app = OrderProcessingUI(root, username, self.user_role)
-            root.mainloop()
-        else:
-            self.message_label.config(text="Invalid credentials")
+def train_prophet_model(data):
+    if data.empty:
+        return None
+    prophet_data = data.rename(columns={'date': 'ds', 'quantity': 'y'})[['ds','y']]
+    model = Prophet()
+    model.fit(prophet_data)
+    return model
 
-    def authenticate(self, username, password):
-        conn = sqlite3.connect('order_system.db')
-        cursor = conn.cursor()
-        cursor.execute("SELECT password, role FROM users WHERE username = ?", (username,))
-        result = cursor.fetchone()
-        conn.close()
-        if result and check_password_hash(result[0], password):
-            self.user_role = result[1]
-            return True
-        else:
-            return False
+def prophet_predict_next_30_days(model):
+    if not model:
+        return []
+    future = model.make_future_dataframe(periods=30)
+    forecast = model.predict(future)
+    result = forecast[['ds','yhat']].tail(30)
+    return result.values.tolist()
 
-# Order Processor Class
+# ------------------------------
+# ORDER PROCESSOR CLASS
+# ------------------------------
 class OrderProcessor:
     def __init__(self, ui):
         self.ui = ui
         self.db_path = 'order_system.db'
-        self.fraud_model = load_fraud_detection_model()  # Load fraud detection model
+        self.fraud_model = load_fraud_detection_model()
         self.blockchain = Blockchain()
 
     def connect_db(self):
         conn = sqlite3.connect(self.db_path)
         conn.execute('PRAGMA foreign_keys = ON')
         return conn
-    
+
     def generate_order_id(self):
-        conn = self.connect_db()
-        cursor = conn.cursor()
-        cursor.execute("SELECT MAX(CAST(order_id AS INTEGER)) FROM orders")
-        max_id = cursor.fetchone()[0]
-        conn.close()
+        with self.connect_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT MAX(CAST(order_id AS INTEGER)) FROM orders")
+            max_id = cursor.fetchone()[0]
         return int(max_id) + 1 if max_id else 1
-    
+
     def reduce_stock(self, cursor, product_id, quantity):
         cursor.execute("SELECT stock FROM products WHERE product_id = ?", (product_id,))
         result = cursor.fetchone()
         if result:
             current_stock = result[0]
-            logging.info(f"Current stock for product {product_id}: {current_stock}")
             if current_stock >= int(quantity):
                 new_stock = current_stock - int(quantity)
                 cursor.execute("UPDATE products SET stock = ? WHERE product_id = ?", (new_stock, product_id))
-                cursor.execute("SELECT stock FROM products WHERE product_id = ?", (product_id,))
-                updated_result = cursor.fetchone()
-                logging.info(f"Updated stock for product {product_id}: {updated_result[0]}")
-                if updated_result[0] < 20:  # Low stock threshold
-                    send_email("Low Stock Alert", f"The stock for product {product_id} is low: {updated_result[0]}", EMAIL_ADDRESS)
+                if new_stock < 20:
+                    send_email("Low Stock Alert", f"Product {product_id} is low on stock: {new_stock}", EMAIL_ADDRESS)
             else:
-                logging.warning(f"Not enough stock available for product {product_id}. Requested: {quantity}, Available: {current_stock}")
+                logging.warning(f"Insufficient stock for {product_id}: Requested {quantity}, Available {current_stock}")
         else:
-            logging.warning(f"No stock information found for product {product_id}")
+            logging.warning(f"Product {product_id} not found.")
 
     def add_order(self, order):
         if not self.validate_order(order):
             self.ui.message_label.config(text="Invalid order details")
             return
-
-        conn = self.connect_db()
         try:
-            cursor = conn.cursor()
-            logging.info(f"Inserting order: {order}")
-            cursor.execute("INSERT INTO orders (order_id, customer_name, date, status) VALUES (?, ?, datetime('now'), 'Processing')",
-                           (order['order_id'], order['customer_name']))
-            cursor.execute("INSERT INTO order_details (order_id, product_id, quantity) VALUES (?, ?, ?)",
-                           (order['order_id'], order['product_id'], order['quantity']))
-            
-            cursor.execute("SELECT stock FROM products WHERE product_id = ?", (order['product_id'],))
-            before_stock = cursor.fetchone()
-            logging.info(f"Stock for product {order['product_id']} before reduction: {before_stock[0]}")
-            
-            self.reduce_stock(cursor, order['product_id'], int(order['quantity']))
-            
-            cursor.execute("SELECT stock FROM products WHERE product_id = ?", (order['product_id'],))
-            after_stock = cursor.fetchone()
-            logging.info(f"Stock for product {order['product_id']} after reduction: {after_stock[0]}")
-            
-            conn.commit()
-            logging.info(f"Order {order['order_id']} added to orders and order_details tables and stock reduced.")
-            
-            # Detect fraud
-            is_fraud, fraud_prob = detect_fraud(order, self.fraud_model)
-            if is_fraud:
-                self.ui.message_label.config(text=f"Order flagged as potentially fraudulent! Fraud Probability: {fraud_prob:.2f}")
-                logging.warning(f"Order {order['order_id']} flagged as fraud. Fraud Probability: {fraud_prob:.2f}")
-                cursor.execute("UPDATE orders SET fraud_flag = 1, fraud_prob = ? WHERE order_id = ?", (fraud_prob, order['order_id']))
-            else:
-                self.ui.message_label.config(text="Order added to the database.")
-                cursor.execute("UPDATE orders SET fraud_flag = 0, fraud_prob = ? WHERE order_id = ?", (fraud_prob, order['order_id']))
+            with self.connect_db() as conn:
+                cursor = conn.cursor()
+                new_order_id = self.generate_order_id()
+                order_id_str = str(new_order_id)
+                cursor.execute(
+                    "INSERT INTO orders (order_id, customer_name, date, status) VALUES (?, ?, datetime('now'), 'Processing')",
+                    (order_id_str, order['customer_name'])
+                )
+                cursor.execute(
+                    "INSERT INTO order_details (order_id, product_id, quantity) VALUES (?, ?, ?)",
+                    (order_id_str, order['product_id'], order['quantity'])
+                )
+                self.reduce_stock(cursor, order['product_id'], int(order['quantity']))
+                conn.commit()
 
-            # Send order confirmation email
-            send_email("Order Confirmation", f"Your order with Order ID {order['order_id']} has been placed successfully.", EMAIL_ADDRESS)
-            
-            # Add high-value order to the blockchain
-            total_price = self.calculate_order_total(order['order_id'], cursor)
-            if total_price > 1000:  # Define high-value threshold (e.g., $1000)
-                block_data = {
-                    'order_id': order['order_id'],
-                    'customer_name': order['customer_name'],
-                    'total_price': total_price,
-                    'products': order['product_id']
-                }
-                new_block = Block(len(self.blockchain.chain), time.time(), str(block_data))
-                self.blockchain.add_block(new_block)
-                logging.info(f"Order {order['order_id']} added to blockchain.")
-                
-                self.ui.update_blockchain_ledger()
-            
-            conn.commit()
-
+                # Fraud detection
+                order['order_id'] = order_id_str
+                is_fraud, fraud_prob = detect_fraud(order, self.fraud_model)
+                flag = 1 if is_fraud else 0
+                cursor.execute(
+                    "UPDATE orders SET fraud_flag = ?, fraud_prob = ? WHERE order_id = ?",
+                    (flag, fraud_prob, order_id_str)
+                )
+                conn.commit()
+                if is_fraud:
+                    self.ui.message_label.config(text=f"Order flagged as potentially fraudulent (Prob: {fraud_prob:.2f})")
+                else:
+                    self.ui.message_label.config(text=f"Order {order_id_str} added successfully.")
+                send_email(
+                    "Order Confirmation",
+                    f"Your order with Order ID {order_id_str} has been placed successfully.",
+                    EMAIL_ADDRESS
+                )
+                # Add to blockchain if total > 1000
+                total_price = self.calculate_order_total(order_id_str, cursor)
+                if total_price > 1000:
+                    block_data = {
+                        'order_id': order_id_str,
+                        'customer_name': order['customer_name'],
+                        'total_price': total_price,
+                        'product_id': order['product_id']
+                    }
+                    new_block = Block(len(self.blockchain.chain), time.time(), str(block_data))
+                    self.blockchain.add_block(new_block)
+                    logging.info(f"Order {order_id_str} added to blockchain.")
+                    self.ui.update_blockchain_ledger()
         except sqlite3.IntegrityError as e:
             logging.error(f"Integrity error: {e}")
             self.ui.message_label.config(text=f"Error: {e}")
         except Exception as e:
-            logging.error(f"Error adding order: {e}")
+            logging.error(f"Order addition error: {e}")
             self.ui.message_label.config(text=f"An error occurred: {str(e)}")
-        finally:
-            conn.close()
-            
+
     def calculate_order_total(self, order_id, cursor):
-        # Calculate the total price of the order
-        cursor.execute('''
-            SELECT SUM(od.quantity * p.price) 
-            FROM order_details od
-            JOIN products p ON od.product_id = p.product_id
-            WHERE od.order_id = ?
-        ''', (order_id,))
-        total_price = cursor.fetchone()[0]
-        return total_price if total_price else 0
-
-    def fetch_flagged_orders(self):
-        conn = self.connect_db()
-        cursor = conn.cursor()
-        cursor.execute("SELECT order_id, customer_name, date, fraud_prob FROM orders WHERE fraud_flag = 1")
-        flagged_orders = cursor.fetchall()
-        conn.close()
-        return flagged_orders
-
-    def validate_order(self, order):
-        # Validate order details
-        if not order['customer_name'] or not order['product_id'] or not order['quantity'].isdigit():
-            logging.warning("Validation failed for order: missing or invalid fields")
-            return False
-        if int(order['quantity']) <= 0:
-            logging.warning("Validation failed for order: quantity must be positive")
-            return False
-        return True
-
-    def update_order_status(self, order_id, new_status):
-        conn = self.connect_db()
-        try:
-            cursor = conn.cursor()
-            cursor.execute("UPDATE orders SET order_status = ? WHERE order_id = ?", (new_status, order_id))
-            conn.commit()
-            logging.info(f"Order ID {order_id} status updated to {new_status}")
-        except Exception as e:
-            logging.error(f"Failed to update order status: {e}")
-        finally:
-            conn.close()
-
-
-    def fetch_orders_with_status(self):
-        conn = self.connect_db()
-        cursor = conn.cursor()
-        cursor.execute("SELECT order_id, customer_name, date, order_status FROM orders")
-        orders = cursor.fetchall()
-        conn.close()
-        return orders
-
-    def fetch_inventory(self):
-        conn = self.connect_db()
-        cursor = conn.cursor()
-        cursor.execute("SELECT name, stock FROM products")
-        inventory = cursor.fetchall()
-        conn.close()
-        return inventory
-
-    def plot_inventory_levels(self):
-        logging.info("Fetching latest inventory data...")
-        conn = None
-        try:
-            conn = self.connect_db()
-            cursor = conn.cursor()
-            cursor.execute("SELECT name, stock FROM products")
-            data = cursor.fetchall()
-            if data:
-                products, stock_levels = zip(*data)
-                logging.info(f"Latest stock levels: {list(stock_levels)}")
-                plt.figure()
-                plt.bar(products, stock_levels)
-                plt.xlabel('Product Name')
-                plt.ylabel('Stock Level')
-                plt.title('Inventory Levels')
-                plt.show()
-            else:
-                logging.info("No inventory data available.")
-        finally:
-            if conn:
-                conn.close()
-
-
-    def generate_sales_report(self):
-        conn = self.connect_db()
-        try:
-            cursor = conn.cursor()
-            cursor.execute('''
-                SELECT o.order_id, o.customer_name, o.date, p.name, od.quantity, p.price, (od.quantity * p.price) AS total_price
-                FROM orders o
-                JOIN order_details od ON o.order_id = od.order_id
-                JOIN products p ON od.product_id = p.product_id
-            ''')
-            data = cursor.fetchall()
-            df = pd.DataFrame(data, columns=['Order ID', 'Customer Name', 'Date', 'Product Name', 'Quantity', 'Price', 'Total Price'])
-            logging.info(f"Sales report generated with {len(df)} entries.")
-            return df
-        finally:
-            if conn:
-                conn.close()
-            
-        # LSTM Model
-    def predict_lstm(self, product_id):
-        sales_data = self.fetch_sales_data(product_id)
-        model, scaler = train_lstm_model(sales_data)
-        predictions = lstm_predict_next_30_days(sales_data, model, scaler)
-        return predictions
-
-    # ARIMA Model
-    def predict_arima(self, product_id):
-        sales_data = self.fetch_sales_data(product_id)
-        model_fit = train_arima_model(sales_data)
-        predictions = arima_predict_next_30_days(model_fit)
-        return predictions
-
-    # Prophet Model
-    def predict_prophet(self, product_id):
-        sales_data = self.fetch_sales_data(product_id)
-        model = train_prophet_model(sales_data)
-        predictions = prophet_predict_next_30_days(model)
-        return predictions
-
-    def fetch_sales_data(self, product_id):
-        conn = self.connect_db()
-        cursor = conn.cursor()
-
-        cursor.execute('''
-            SELECT o.date, od.quantity
-            FROM order_details od
-            JOIN orders o ON od.order_id = o.order_id
-            WHERE od.product_id = ?
-            ORDER BY o.date
-        ''', (product_id,))
-
-        data = cursor.fetchall()
-        conn.close()
-
-        # Convert to DataFrame
-        df = pd.DataFrame(data, columns=['date', 'quantity'])
-        df['date'] = pd.to_datetime(df['date'])  # Ensure dates are in correct format
-        return df
-
-
-    # Predictive Analytics for Stock Management
-    def predict_stock_requirements(product_id):
-        conn = sqlite3.connect('order_system.db')
-        cursor = conn.cursor()
-        
-        # Fetch historical sales data for the product
-        cursor.execute('''
-            SELECT od.quantity, o.date
-            FROM order_details od
-            JOIN orders o ON od.order_id = o.order_id
-            WHERE od.product_id = ?
-            ORDER BY o.date
-        ''', (product_id,))
-        
-        data = cursor.fetchall()
-        conn.close()
-        
-        if not data:
-            logging.warning(f"No historical data available for product {product_id}")
-            return None
-        
-        # Prepare the data for linear regression
-        quantities = [row[0] for row in data]
-        dates = pd.to_datetime([row[1] for row in data])
-        days = (dates - dates.min()).days.values.reshape(-1, 1)
-        
-        # Train the linear regression model
-        model = LinearRegression()
-        model.fit(days, quantities)
-        
-        # Predict future stock requirements (e.g., for the next 30 days)
-        future_days = np.arange(days.max() + 1, days.max() + 31).reshape(-1, 1)
-        future_predictions = model.predict(future_days)
-        
-        return int(np.ceil(future_predictions.sum()))
-    
-    # LSTM Model Functions
-def train_lstm_model(data, feature='quantity'):
-    # Normalize data
-    scaler = MinMaxScaler(feature_range=(0, 1))
-    scaled_data = scaler.fit_transform(data[feature].values.reshape(-1, 1))
-
-    # Prepare input/output sequences for LSTM
-    x_train, y_train = [], []
-    sequence_length = 30  # last 30 days data
-
-    for i in range(sequence_length, len(scaled_data)):
-        x_train.append(scaled_data[i-sequence_length:i, 0])
-        y_train.append(scaled_data[i, 0])
-
-    x_train, y_train = np.array(x_train), np.array(y_train)
-    x_train = np.reshape(x_train, (x_train.shape[0], x_train.shape[1], 1))  # [samples, time steps, features]
-
-    # Build LSTM model
-    model = Sequential()
-    model.add(LSTM(units=50, return_sequences=True, input_shape=(x_train.shape[1], 1)))
-    model.add(LSTM(units=50, return_sequences=False))
-    model.add(Dense(units=25))
-    model.add(Dense(units=1))
-
-    # Compile the model
-    model.compile(optimizer='adam', loss='mean_squared_error')
-
-    # Train the model
-    model.fit(x_train, y_train, batch_size=32, epochs=20)
-
-    return model, scaler
-
-def lstm_predict_next_30_days(data, model, scaler):
-    last_30_days = data[-30:].values.reshape(-1, 1)
-    scaled_last_30_days = scaler.transform(last_30_days)
-
-    # Predict the next 30 days
-    x_input = np.reshape(scaled_last_30_days, (1, scaled_last_30_days.shape[0], 1))
-    predictions = []
-
-    for i in range(30):
-        pred = model.predict(x_input)
-        predictions.append(pred[0, 0])
-        x_input = np.append(x_input[:, 1:, :], [[pred]], axis=1)
-
-    predicted_values = scaler.inverse_transform(np.array(predictions).reshape(-1, 1))
-    return predicted_values
-
-# ARIMA Model Functions
-def train_arima_model(data, feature='quantity'):
-    # Fit ARIMA model
-    model = sm.tsa.ARIMA(data[feature].values, order=(5, 1, 0))  # Adjust order for ARIMA
-    model_fit = model.fit(disp=0)
-    return model_fit
-
-def arima_predict_next_30_days(model_fit):
-    # Predict next 30 days
-    forecast = model_fit.forecast(steps=30)[0]
-    return forecast
-
-# Prophet Model Functions
-def train_prophet_model(data):
-    # Prepare data for Prophet
-    prophet_data = data.rename(columns={'date': 'ds', 'quantity': 'y'})
-
-    # Initialize Prophet model
-    model = Prophet()
-    model.fit(prophet_data)
-
-    return model
-
-def prophet_predict_next_30_days(model):
-    # Predict future values for the next 30 days
-    future = model.make_future_dataframe(periods=30)
-    forecast = model.predict(future)
-    return forecast[['ds', 'yhat']][-30:]  # Return the last 30 days of prediction
-
-
-# Real-time Dashboard Class
-# Real-time Dashboard Class
-class RealTimeDashboard:
-    def __init__(self, master):
-        self.master = master
-        
-        self.label_sales = ttk.Label(master, text="Total Sales: $0", font=("Helvetica", 16))
-        self.label_sales.pack(pady=20)
-        
-        self.label_orders = ttk.Label(master, text="Total Orders: 0", font=("Helvetica", 16))
-        self.label_orders.pack(pady=20)
-        
-        self.label_low_stock = ttk.Label(master, text="Low Stock Alerts: None", font=("Helvetica", 16))
-        self.label_low_stock.pack(pady=20)
-        
-        self.update_dashboard()
-
-    def update_dashboard(self):
-        logging.info("Updating dashboard...")
-        conn = sqlite3.connect('order_system.db')
-        cursor = conn.cursor()
-        
-        # Update total sales
         cursor.execute('''
             SELECT SUM(od.quantity * p.price)
             FROM order_details od
             JOIN products p ON od.product_id = p.product_id
-        ''')
-        total_sales = cursor.fetchone()[0] or 0
-        self.label_sales.config(text=f"Total Sales: ${total_sales:.2f}")
-        
-        # Update total orders
-        cursor.execute("SELECT COUNT(*) FROM orders")
-        total_orders = cursor.fetchone()[0]
-        self.label_orders.config(text=f"Total Orders: {total_orders}")
-        
-        # Update low stock alerts
-        cursor.execute("SELECT name FROM products WHERE stock < 20")
-        low_stock_items = cursor.fetchall()
-        if low_stock_items:
-            low_stock_text = "Low Stock Alerts: " + ", ".join([item[0] for item in low_stock_items])
-        else:
-            low_stock_text = "Low Stock Alerts: None"
-        self.label_low_stock.config(text=low_stock_text)
-        
-        conn.close()
+            WHERE od.order_id = ?
+        ''', (order_id,))
+        total = cursor.fetchone()[0]
+        return total if total else 0
 
-        # Schedule the next update in the main thread
+    def fetch_flagged_orders(self):
+        with self.connect_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT order_id, customer_name, date, fraud_prob FROM orders WHERE fraud_flag = 1")
+            orders = cursor.fetchall()
+        return orders
+
+    def validate_order(self, order):
+        if not order.get('customer_name') or not order.get('product_id') or not order.get('quantity'):
+            logging.warning("Order missing required fields.")
+            return False
+        if not order['quantity'].isdigit() or int(order['quantity']) <= 0:
+            logging.warning("Invalid quantity specified.")
+            return False
+        return True
+
+    def update_order_status(self, order_id, new_status):
+        try:
+            with self.connect_db() as conn:
+                cursor = conn.cursor()
+                cursor.execute("UPDATE orders SET order_status = ? WHERE order_id = ?", (new_status, order_id))
+                conn.commit()
+            logging.info(f"Order {order_id} updated to {new_status}")
+        except Exception as e:
+            logging.error(f"Status update error: {e}")
+
+    def fetch_orders_with_status(self):
+        with self.connect_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT order_id, customer_name, date, order_status FROM orders")
+            orders = cursor.fetchall()
+        return orders
+
+    def fetch_inventory(self):
+        with self.connect_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT name, stock FROM products")
+            inventory = cursor.fetchall()
+        return inventory
+
+    def plot_inventory_levels(self):
+        try:
+            with self.connect_db() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT name, stock FROM products")
+                data = cursor.fetchall()
+            if data:
+                products, stocks = zip(*data)
+                # Increase figure size for better spacing
+                plt.figure(figsize=(12, 6))
+                plt.bar(products, stocks)
+                plt.xlabel('Product Name')
+                plt.ylabel('Stock Level')
+                plt.title('Inventory Levels')
+                # Rotate x-axis labels to prevent overlapping
+                plt.xticks(rotation=45, ha='right')
+                # Adjust layout automatically to fit labels
+                plt.tight_layout()
+                plt.show()
+            else:
+                logging.info("No inventory data available.")
+        except Exception as e:
+            logging.error(f"Inventory plot error: {e}")
+
+
+    # NEW: fetch_all_sales_df for Analytics – only include HVAC product orders
+    def fetch_all_sales_df(self):
+        try:
+            with self.connect_db() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT o.order_id AS "Order ID",
+                           o.customer_name AS "Customer Name",
+                           o.date AS "Date",
+                           p.name AS "Product Name",
+                           od.quantity AS "Quantity",
+                           p.price AS "Price",
+                           (od.quantity * p.price) AS "Total Price"
+                    FROM orders o
+                    JOIN order_details od ON o.order_id = od.order_id
+                    JOIN products p ON od.product_id = p.product_id
+                    WHERE p.product_id LIKE 'HV%'
+                ''')
+                data = cursor.fetchall()
+            df = pd.DataFrame(data, columns=[
+                "Order ID", "Customer Name", "Date",
+                "Product Name", "Quantity", "Price", "Total Price"
+            ])
+            return df
+        except Exception as e:
+            logging.error(f"fetch_all_sales_df error: {e}")
+            return pd.DataFrame()
+
+    # For the Inventory Tab: open a window with a scrollable report table.
+    def generate_sales_report_table(self, parent_window):
+        df = self.fetch_all_sales_df()
+        if df.empty:
+            messagebox.showerror("Error", "No sales data available.")
+            return
+
+        report_window = tk.Toplevel(parent_window)
+        report_window.title("Sales Report")
+
+        container = ttk.Frame(report_window)
+        container.pack(fill=tk.BOTH, expand=True)
+
+        columns = list(df.columns)
+        tree = ttk.Treeview(container, columns=columns, show='headings', height=20)
+        for col in columns:
+            tree.heading(col, text=col)
+            tree.column(col, width=100, anchor=tk.CENTER)
+        for _, row in df.iterrows():
+            tree.insert("", tk.END, values=list(row))
+        scrollbar = ttk.Scrollbar(container, orient=tk.VERTICAL, command=tree.yview)
+        tree.configure(yscrollcommand=scrollbar.set)
+        tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+    def search_order(self, order_id):
+        try:
+            with self.connect_db() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT o.order_id, o.customer_name, o.date, o.order_status,
+                           p.name, od.quantity, (od.quantity * p.price) AS total_price
+                    FROM orders o
+                    JOIN order_details od ON o.order_id = od.order_id
+                    JOIN products p ON od.product_id = p.product_id
+                    WHERE o.order_id = ?
+                ''', (order_id,))
+                result = cursor.fetchone()
+            return result
+        except Exception as e:
+            logging.error(f"Search order error: {e}")
+            return None
+
+# ------------------------------
+# REAL-TIME DASHBOARD
+# ------------------------------
+class RealTimeDashboard:
+    def __init__(self, master):
+        self.master = master
+        self.setup_ui()
+        self.update_dashboard()
+
+    def setup_ui(self):
+        self.frame = ttk.Frame(self.master)
+        self.frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        self.label_sales = ttk.Label(self.frame, text="Total Sales: $0.00", font=("Helvetica", 16))
+        self.label_sales.grid(row=0, column=0, sticky="w", pady=5)
+        self.label_orders = ttk.Label(self.frame, text="Total Orders: 0", font=("Helvetica", 16))
+        self.label_orders.grid(row=1, column=0, sticky="w", pady=5)
+        self.label_low_stock = ttk.Label(self.frame, text="Low Stock Alerts: None", font=("Helvetica", 16))
+        self.label_low_stock.grid(row=2, column=0, sticky="w", pady=5)
+
+    def update_dashboard(self):
+        try:
+            with sqlite3.connect('order_system.db') as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT SUM(od.quantity * p.price)
+                    FROM order_details od
+                    JOIN products p ON od.product_id = p.product_id
+                ''')
+                total_sales = cursor.fetchone()[0] or 0
+                self.label_sales.config(text=f"Total Sales: ${total_sales:.2f}")
+                cursor.execute("SELECT COUNT(*) FROM orders")
+                total_orders = cursor.fetchone()[0]
+                self.label_orders.config(text=f"Total Orders: {total_orders}")
+                cursor.execute("SELECT name FROM products WHERE stock < 20")
+                low_stock = cursor.fetchall()
+                if low_stock:
+                    self.label_low_stock.config(text="Low Stock Alerts: " + ", ".join([item[0] for item in low_stock]))
+                else:
+                    self.label_low_stock.config(text="Low Stock Alerts: None")
+        except Exception as e:
+            logging.error(f"Dashboard update error: {e}")
         self.master.after(DASHBOARD_UPDATE_INTERVAL * 1000, self.update_dashboard)
 
+# ------------------------------
+# LOGIN UI
+# ------------------------------
+class LoginUI:
+    def __init__(self, master):
+        self.master = master
+        self.master.title("Login")
+        self.master.geometry("300x200")
+        self.setup_ui()
 
-    def start_dashboard_updates(self):
-        self.update_dashboard()
-        threading.Timer(DASHBOARD_UPDATE_INTERVAL, self.start_dashboard_updates).start()
+    def setup_ui(self):
+        frame = ttk.Frame(self.master, padding="10")
+        frame.pack(expand=True, fill=tk.BOTH)
+        ttk.Label(frame, text="Username:").grid(row=0, column=0, sticky="w", pady=5)
+        self.username_entry = ttk.Entry(frame)
+        self.username_entry.grid(row=0, column=1, pady=5)
+        ttk.Label(frame, text="Password:").grid(row=1, column=0, sticky="w", pady=5)
+        self.password_entry = ttk.Entry(frame, show="*")
+        self.password_entry.grid(row=1, column=1, pady=5)
+        self.message_label = ttk.Label(frame, text="", foreground="red")
+        self.message_label.grid(row=2, column=0, columnspan=2, pady=5)
+        ttk.Button(frame, text="Login", command=self.login).grid(row=3, column=0, columnspan=2, pady=10)
 
-# Main Application Class (Updated)
-# Main Application Class (Updated)
+    def login(self):
+        username = self.username_entry.get()
+        password = self.password_entry.get()
+        if self.authenticate(username, password):
+            self.master.destroy()
+            root = tk.Tk()
+            OrderProcessingUI(root, username, self.user_role)
+            root.mainloop()
+        else:
+            self.message_label.config(text="Invalid credentials")
+
+    def authenticate(self, username, password):
+        try:
+            with sqlite3.connect('order_system.db') as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT password, role FROM users WHERE username = ?", (username,))
+                result = cursor.fetchone()
+            if result and check_password_hash(result[0], password):
+                self.user_role = result[1]
+                return True
+            return False
+        except Exception as e:
+            logging.error(f"Authentication error: {e}")
+            return False
+
+# ------------------------------
+# MAIN ORDER PROCESSING UI
+# ------------------------------
 class OrderProcessingUI:
     def __init__(self, master, username, user_role):
         self.master = master
         self.username = username
         self.user_role = user_role
         self.master.title(f"Order Processing System - Logged in as {username}")
-        self.master.geometry("800x600")
-
+        self.master.geometry("1000x700")
         self.order_processor = OrderProcessor(self)
-        notebook = ttk.Notebook(master)
+        self.create_menu()
+        self.setup_notebook()
+
+    def create_menu(self):
+        menu_bar = tk.Menu(self.master)
+        file_menu = tk.Menu(menu_bar, tearoff=0)
+        file_menu.add_command(label="Exit", command=self.master.quit)
+        menu_bar.add_cascade(label="File", menu=file_menu)
+        help_menu = tk.Menu(menu_bar, tearoff=0)
+        help_menu.add_command(label="About", command=lambda: messagebox.showinfo("About", "Order Processing System v2.0"))
+        menu_bar.add_cascade(label="Help", menu=help_menu)
+        self.master.config(menu=menu_bar)
+
+    def setup_notebook(self):
+        notebook = ttk.Notebook(self.master)
+        self.analytics_tab = ttk.Frame(notebook)
+        self.dashboard_tab = ttk.Frame(notebook)
+        self.blockchain_tab = ttk.Frame(notebook)
+        self.fraud_tab = ttk.Frame(notebook)
+        self.chatbot_tab = ttk.Frame(notebook)
         self.order_tab = ttk.Frame(notebook)
         self.inventory_tab = ttk.Frame(notebook)
-        self.analytics_tab = None
-        
-
+        self.email_tab = ttk.Frame(notebook)
+        self.reports_tab = ttk.Frame(notebook)
+        self.admin_tab = None
 
         if self.user_role == 'admin':
+            notebook.add(self.analytics_tab, text='Sales Analytics')
+            notebook.add(self.dashboard_tab, text='Dashboard')
+            notebook.add(self.blockchain_tab, text='Blockchain Ledger')
+            notebook.add(self.fraud_tab, text='Fraud Detection')
+            notebook.add(self.chatbot_tab, text='Chatbot')
+            notebook.add(self.order_tab, text='Order Entry')
+            notebook.add(self.inventory_tab, text='Inventory')
+            notebook.add(self.email_tab, text='Email Orders')
+            notebook.add(self.reports_tab, text='Reports')
             self.admin_tab = ttk.Frame(notebook)
             notebook.add(self.admin_tab, text='Admin')
+        elif self.user_role == 'manager':
+            notebook.add(self.analytics_tab, text='Sales Analytics')
+            notebook.add(self.dashboard_tab, text='Dashboard')
+            notebook.add(self.fraud_tab, text='Fraud Detection')
+            notebook.add(self.order_tab, text='Order Entry')
+            notebook.add(self.inventory_tab, text='Inventory')
+            notebook.add(self.email_tab, text='Email Orders')
+            notebook.add(self.reports_tab, text='Reports')
+        elif self.user_role == 'employee':
+            notebook.add(self.order_tab, text='Order Entry')
+            notebook.add(self.inventory_tab, text='Inventory')
+            notebook.add(self.email_tab, text='Email Orders')
 
-        self.analytics_tab = ttk.Frame(notebook)
-        notebook.add(self.analytics_tab, text='Sales Analytics')
-        
-        self.dashboard_tab = ttk.Frame(notebook)
-        notebook.add(self.dashboard_tab, text='Dashboard')
-        
-        # Adding the Blockchain Ledger Tab
-        self.blockchain_tab = ttk.Frame(notebook)
-        notebook.add(self.blockchain_tab, text='Blockchain Ledger')
-        self.setup_blockchain_tab()
-
-        # Adding the Fraud Detection Tab
-        self.fraud_tab = ttk.Frame(notebook)
-        notebook.add(self.fraud_tab, text='Fraud Detection')
-        self.setup_fraud_dashboard_tab()
-
-        # Adding the Chatbot Tab
-        self.chatbot_tab = ttk.Frame(notebook)
-        notebook.add(self.chatbot_tab, text='Chatbot')
-        ChatbotTab(self.chatbot_tab)  # Initialize the Chatbot tab UI
-
-        notebook.add(self.order_tab, text='Order Entry')
-        notebook.add(self.inventory_tab, text='Inventory Management')
         notebook.pack(expand=1, fill="both")
+        self.setup_tabs()
 
+    def setup_tabs(self):
+        if self.user_role in ['admin', 'manager']:
+            self.setup_analytics_tab()
+            self.setup_dashboard_tab()
+            self.setup_fraud_tab()
+            self.setup_reports_tab()
+        if self.user_role == 'admin':
+            self.setup_blockchain_tab()
+            ChatbotTab(self.chatbot_tab)
         self.setup_order_tab()
         self.setup_inventory_tab()
-        if self.admin_tab:
+        self.setup_email_tab()
+        if self.user_role == 'admin':
             self.setup_admin_tab()
-        if self.analytics_tab:
-            self.setup_analytics_tab()
-        if self.dashboard_tab:
-            self.setup_dashboard_tab()
-            
-    def setup_blockchain_tab(self):
-        ttk.Label(self.blockchain_tab, text="Blockchain Ledger").pack(pady=10)
-        columns = ("Block Index", "Timestamp", "Order Data", "Previous Hash", "Hash")
-        self.blockchain_tree = ttk.Treeview(self.blockchain_tab, columns=columns, show='headings')
-        for col in columns:
-            self.blockchain_tree.heading(col, text=col)
-            self.blockchain_tree.column(col, width=150, anchor=tk.CENTER)
-        self.blockchain_tree.pack(fill=tk.BOTH, expand=True)
 
-        self.load_blockchain_data()
-        
-        self.update_blockchain_ledger()
-
-    def load_blockchain_data(self):
-        for block in self.order_processor.blockchain.chain:
-            self.blockchain_tree.insert("", tk.END, values=(block.index, block.timestamp, block.data, block.previous_hash, block.hash))
-            
-    def update_blockchain_ledger(self):
-    # Clear existing blockchain ledger treeview
-        for row in self.blockchain_tree.get_children():
-            self.blockchain_tree.delete(row)
-    
-        # Insert all blocks into the treeview
-        for block in self.order_processor.blockchain.chain:
-            self.blockchain_tree.insert("", tk.END, values=(
-                block.index,
-                block.timestamp,
-                block.data,
-                block.previous_hash,
-                block.hash
-            ))
-
-
-    def setup_fraud_dashboard_tab(self):
-        ttk.Label(self.fraud_tab, text="Flagged Fraudulent Orders").pack(pady=10)
-        columns = ("Order ID", "Customer Name", "Date", "Fraud Probability")
-        self.fraud_tree = ttk.Treeview(self.fraud_tab, columns=columns, show='headings')
-        for col in columns:
-            self.fraud_tree.heading(col, text=col)
-            self.fraud_tree.column(col, width=150, anchor=tk.CENTER)
-        self.fraud_tree.pack(fill=tk.BOTH, expand=True)
-
-        self.load_fraud_data()
-
-    def load_fraud_data(self):
-        orders = self.order_processor.fetch_flagged_orders()
-        for order in orders:
-            self.fraud_tree.insert("", tk.END, values=order)
-
-    # Other setup functions...
-
-    def setup_order_tab(self):
-        ttk.Label(self.order_tab, text="Order ID:").pack()
-        self.order_id_label = ttk.Label(self.order_tab, text="")
-        self.order_id_label.pack()
-
-        ttk.Label(self.order_tab, text="Customer Name:").pack()
-        self.customer_name_entry = ttk.Entry(self.order_tab)
-        self.customer_name_entry.pack()
-
-        ttk.Label(self.order_tab, text="Product ID:").pack()
-        self.product_id_entry = ttk.Entry(self.order_tab)
-        self.product_id_entry.pack()
-
-        ttk.Label(self.order_tab, text="Quantity:").pack()
-        self.quantity_entry = ttk.Entry(self.order_tab)
-        self.quantity_entry.pack()
-
-        ttk.Button(self.order_tab, text="Submit Order", command=self.submit_order).pack()
-        ttk.Button(self.order_tab, text="Cancel Order", command=self.cancel_order).pack()
-
-        self.message_label = ttk.Label(self.order_tab, text="")
-        self.message_label.pack()
-
-        ttk.Label(self.order_tab, text="Update Order Status").pack(pady=10)
-        self.order_status_entry = ttk.Entry(self.order_tab)
-        self.order_status_entry.pack()
-
-        ttk.Button(self.order_tab, text="Update Status", command=self.update_status).pack(pady=10)
-    
-    def update_status(self):
-        order_id = self.order_id_label.cget("text").split(": ")[1]
-        new_status = self.order_status_entry.get()
-        self.order_processor.update_order_status(order_id, new_status)
-        self.message_label.config(text=f"Order ID {order_id} status updated to {new_status}")
-
-    def setup_inventory_tab(self):
-        ttk.Button(self.inventory_tab, text="Plot Inventory Levels", command=self.order_processor.plot_inventory_levels).pack(pady=20)
-        ttk.Button(self.inventory_tab, text="Generate Sales Report", command=self.generate_sales_report).pack(pady=20)
-
-    def setup_admin_tab(self):
-        ttk.Label(self.admin_tab, text="Add New Product").pack()
-        ttk.Label(self.admin_tab, text="Product ID:").pack()
-        self.new_product_id_entry = ttk.Entry(self.admin_tab)
-        self.new_product_id_entry.pack()
-
-        ttk.Label(self.admin_tab, text="Product Name:").pack()
-        self.new_product_name_entry = ttk.Entry(self.admin_tab)
-        self.new_product_name_entry.pack()
-
-        ttk.Label(self.admin_tab, text="Price:").pack()
-        self.new_product_price_entry = ttk.Entry(self.admin_tab)
-        self.new_product_price_entry.pack()
-
-        ttk.Label(self.admin_tab, text="Stock:").pack()
-        self.new_product_stock_entry = ttk.Entry(self.admin_tab)
-        self.new_product_stock_entry.pack()
-
-        ttk.Button(self.admin_tab, text="Add Product", command=self.add_product).pack()
-        ttk.Button(self.admin_tab, text="Update Product", command=self.update_product).pack()
-        ttk.Button(self.admin_tab, text="Delete Product", command=self.delete_product).pack()
-
-        ttk.Label(self.admin_tab, text="Approve/Reject Registrations").pack(pady=10)
-        self.registration_listbox = tk.Listbox(self.admin_tab)
-        self.registration_listbox.pack()
-        self.load_registrations()
-
-        ttk.Button(self.admin_tab, text="Approve", command=self.approve_registration).pack(side=tk.LEFT, padx=10)
-        ttk.Button(self.admin_tab, text="Reject", command=self.reject_registration).pack(side=tk.LEFT)
-
-        self.admin_message_label = ttk.Label(self.admin_tab, text="")
-        self.admin_message_label.pack()
-
+    # ----------------------
+    # Analytics Tab (Plots)
+    # ----------------------
     def setup_analytics_tab(self):
-        ttk.Button(self.analytics_tab, text="View Sales Summary", command=self.view_sales_summary).pack(pady=10)
-        ttk.Button(self.analytics_tab, text="Sales by Product", command=self.plot_sales_by_product).pack(pady=10)
-        ttk.Button(self.analytics_tab, text="Monthly Sales", command=self.plot_monthly_sales).pack(pady=10)
+        frame = ttk.Frame(self.analytics_tab, padding="10")
+        frame.pack(fill=tk.BOTH, expand=True)
 
-    def setup_dashboard_tab(self):
-        dashboard = RealTimeDashboard(self.dashboard_tab)
+        ttk.Button(frame, text="View Sales Summary", command=self.view_sales_summary).grid(row=0, column=0, padx=5, pady=5)
+        ttk.Button(frame, text="Sales by Product", command=self.plot_sales_by_product).grid(row=0, column=1, padx=5, pady=5)
+        ttk.Button(frame, text="Monthly Sales", command=self.plot_monthly_sales).grid(row=0, column=2, padx=5, pady=5)
 
-    def load_registrations(self):
-        conn = sqlite3.connect('order_system.db')
-        cursor = conn.cursor()
-        cursor.execute("SELECT registration_id, username FROM user_registrations WHERE status = 'Pending'")
-        registrations = cursor.fetchall()
-        self.registration_listbox.delete(0, tk.END)
-        for reg in registrations:
-            self.registration_listbox.insert(tk.END, f"{reg[0]}: {reg[1]}")
-        conn.close()
+        # Order search
+        search_frame = ttk.LabelFrame(frame, text="Search Order", padding="10")
+        search_frame.grid(row=1, column=0, columnspan=3, pady=10, sticky="ew")
+        ttk.Label(search_frame, text="Order ID:").grid(row=0, column=0, sticky="w")
+        self.search_entry = ttk.Entry(search_frame, width=20)
+        self.search_entry.grid(row=0, column=1, padx=5)
+        ttk.Button(search_frame, text="Search", command=self.search_order).grid(row=0, column=2, padx=5)
+        self.search_result = ttk.Label(search_frame, text="")
+        self.search_result.grid(row=1, column=0, columnspan=3, pady=5)
 
-    def approve_registration(self):
-        selection = self.registration_listbox.curselection()
-        if selection:
-            reg_id = self.registration_listbox.get(selection[0]).split(":")[0]
-            conn = sqlite3.connect('order_system.db')
-            cursor = conn.cursor()
-            cursor.execute("SELECT username, password, email, role FROM user_registrations WHERE registration_id = ?", (reg_id,))
-            user_data = cursor.fetchone()
-            if user_data:
-                cursor.execute("INSERT INTO users (username, password, role) VALUES (?, ?, ?)", (user_data[0], user_data[1], user_data[3]))
-                cursor.execute("UPDATE user_registrations SET status = 'Approved' WHERE registration_id = ?", (reg_id,))
-                conn.commit()
-                self.admin_message_label.config(text="User approved and added to the system.")
-            conn.close()
-            self.load_registrations()
-
-    def reject_registration(self):
-        selection = self.registration_listbox.curselection()
-        if selection:
-            reg_id = self.registration_listbox.get(selection[0]).split(":")[0]
-            conn = sqlite3.connect('order_system.db')
-            cursor = conn.cursor()
-            cursor.execute("UPDATE user_registrations SET status = 'Rejected' WHERE registration_id = ?", (reg_id,))
-            conn.commit()
-            conn.close()
-            self.load_registrations()
-            self.admin_message_label.config(text="User registration rejected.")
-
-    def add_product(self):
-        product_id = self.new_product_id_entry.get()
-        product_name = self.new_product_name_entry.get()
-        price = self.new_product_price_entry.get()
-        stock = self.new_product_stock_entry.get()
-
-        if not product_id or not product_name or not price or not stock:
-            self.admin_message_label.config(text="All fields are required")
-            return
-
-        try:
-            price = float(price)
-            stock = int(stock)
-        except ValueError:
-            self.admin_message_label.config(text="Invalid price or stock value")
-            return
-
-        try:
-            with sqlite3.connect('order_system.db') as conn:
-                cursor = conn.cursor()
-                cursor.execute("INSERT INTO products (product_id, name, price, stock) VALUES (?, ?, ?, ?)",
-                               (product_id, product_name, price, stock))
-                conn.commit()
-            self.admin_message_label.config(text="Product added successfully")
-        except sqlite3.IntegrityError:
-            self.admin_message_label.config(text="Product ID already exists")
-        except Exception as e:
-            self.admin_message_label.config(text=f"An error occurred: {str(e)}")
-
-    def update_product(self):
-        product_id = self.new_product_id_entry.get()
-        product_name = self.new_product_name_entry.get()
-        price = self.new_product_price_entry.get()
-        stock = self.new_product_stock_entry.get()
-
-        if not product_id or not product_name or not price or not stock:
-            self.admin_message_label.config(text="All fields are required")
-            return
-
-        try:
-            price = float(price)
-            stock = int(stock)
-        except ValueError:
-            self.admin_message_label.config(text="Invalid price or stock value")
-            return
-
-        try:
-            with sqlite3.connect('order_system.db') as conn:
-                cursor = conn.cursor()
-                cursor.execute("UPDATE products SET name = ?, price = ?, stock = ? WHERE product_id = ?",
-                               (product_name, price, stock, product_id))
-                conn.commit()
-            self.admin_message_label.config(text="Product updated successfully")
-        except sqlite3.IntegrityError:
-            self.admin_message_label.config(text="Error updating product")
-        except Exception as e:
-            self.admin_message_label.config(text=f"An error occurred: {str(e)}")
-
-    def delete_product(self):
-        product_id = self.new_product_id_entry.get()
-
-        if not product_id:
-            self.admin_message_label.config(text="Product ID is required")
-            return
-
-        try:
-            with sqlite3.connect('order_system.db') as conn:
-                cursor = conn.cursor()
-                cursor.execute("DELETE FROM products WHERE product_id = ?", (product_id,))
-                conn.commit()
-            self.admin_message_label.config(text="Product deleted successfully")
-        except Exception as e:
-            self.admin_message_label.config(text=f"An error occurred: {str(e)}")
-
-    def submit_order(self):
-        order_id = self.order_processor.generate_order_id()
-        order_details = {
-            "order_id": order_id,
-            "customer_name": self.customer_name_entry.get(),
-            "product_id": self.product_id_entry.get(),
-            "quantity": self.quantity_entry.get()
-        }
-        self.order_id_label.config(text=f"Order ID: {order_id}")
-        logging.info(f"Submitting order: {order_details}")
-        self.order_processor.add_order(order_details)
-
-    def cancel_order(self):
-        self.order_id_label.config(text="")
-        self.customer_name_entry.delete(0, tk.END)
-        self.product_id_entry.delete(0, tk.END)
-        self.quantity_entry.delete(0, tk.END)
-        self.message_label.config(text="Order cancelled. All fields cleared.")
-
-    def generate_sales_report(self):
-        df = self.order_processor.generate_sales_report()
-        if df is not None:
-            report_window = tk.Toplevel(self.master)
-            report_window.title("Sales Report")
-
-            frame = ttk.Frame(report_window)
-            frame.pack(fill=tk.BOTH, expand=True)
-
-            tree = ttk.Treeview(frame, columns=list(df.columns), show='headings')
-            for col in df.columns:
-                tree.heading(col, text=col)
-                tree.column(col, width=100, anchor=tk.CENTER)
-            for index, row in df.iterrows():
-                tree.insert("", tk.END, values=list(row))
-            tree.pack(fill=tk.BOTH, expand=True)
-
-            export_button = ttk.Button(report_window, text="Export to CSV", command=lambda: self.export_to_csv(df))
-            export_button.pack(pady=10)
-
-    def export_to_csv(self, df):
-        df.to_csv('sales_report.csv', index=False)
-        logging.info("Sales report exported to sales_report.csv")
+    def search_order(self):
+        order_id = self.search_entry.get().strip()
+        if order_id:
+            result = self.order_processor.search_order(order_id)
+            if result:
+                res_text = (f"OrderID: {result[0]}, Customer: {result[1]}, Date: {result[2]}, "
+                            f"Status: {result[3]}, Product: {result[4]}, Qty: {result[5]}, "
+                            f"Total: ${result[6]:.2f}")
+                self.search_result.config(text=res_text)
+            else:
+                self.search_result.config(text="Order not found.")
+        else:
+            self.search_result.config(text="Please enter an Order ID.")
 
     def view_sales_summary(self):
-        df = self.order_processor.generate_sales_report()
-        if df is not None:
+        df = self.order_processor.fetch_all_sales_df()
+        if not df.empty:
             summary = df.groupby('Product Name')['Total Price'].sum()
             plt.figure()
             summary.plot(kind='bar', title='Sales Summary by Product')
             plt.xlabel('Product Name')
             plt.ylabel('Total Sales')
+            plt.tight_layout()
             plt.show()
+        else:
+            messagebox.showinfo("No Data", "No sales data available for summary.")
 
     def plot_sales_by_product(self):
-        df = self.order_processor.generate_sales_report()
-        if df is not None:
+        df = self.order_processor.fetch_all_sales_df()
+        if not df.empty:
             plt.figure()
-            sns.barplot(x='Product Name', y='Quantity', data=df, estimator=sum)
-            plt.title('Total Sales by Product')
+            df.groupby('Product Name')['Quantity'].sum().plot(kind='bar', title='Total Sales by Product')
+            plt.xlabel('Product Name')
+            plt.ylabel('Quantity Sold')
+            plt.tight_layout()
             plt.show()
+        else:
+            messagebox.showinfo("No Data", "No sales data available for plotting.")
 
     def plot_monthly_sales(self):
-        df = self.order_processor.generate_sales_report()
-        if df is not None:
+        df = self.order_processor.fetch_all_sales_df()
+        if not df.empty:
             df['Date'] = pd.to_datetime(df['Date'])
-            monthly_sales = df.resample('ME', on='Date').sum()
+            monthly = df.resample('M', on='Date').sum()
             plt.figure()
-            monthly_sales['Total Price'].plot(kind='line', marker='o')
-            plt.title('Monthly Sales')
+            monthly['Total Price'].plot(kind='line', marker='o', title='Monthly Sales')
             plt.xlabel('Month')
             plt.ylabel('Total Sales')
+            plt.tight_layout()
             plt.show()
+        else:
+            messagebox.showinfo("No Data", "No monthly sales data available.")
 
+    # ----------------------
+    # Dashboard Tab
+    # ----------------------
+    def setup_dashboard_tab(self):
+        RealTimeDashboard(self.dashboard_tab)
+
+    # ----------------------
+    # Blockchain Tab
+    # ----------------------
+    def setup_blockchain_tab(self):
+        frame = ttk.Frame(self.blockchain_tab, padding="10")
+        frame.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(frame, text="Blockchain Ledger", font=("Helvetica", 14)).pack(pady=10)
+        columns = ("Block Index", "Timestamp", "Order Data", "Previous Hash", "Hash")
+        self.blockchain_tree = ttk.Treeview(frame, columns=columns, show='headings')
+        for col in columns:
+            self.blockchain_tree.heading(col, text=col)
+            self.blockchain_tree.column(col, width=150, anchor=tk.CENTER)
+        self.blockchain_tree.pack(fill=tk.BOTH, expand=True)
+        ttk.Button(frame, text="Refresh Ledger", command=self.update_blockchain_ledger).pack(pady=5)
+        self.update_blockchain_ledger()
+
+    def update_blockchain_ledger(self):
+        for row in self.blockchain_tree.get_children():
+            self.blockchain_tree.delete(row)
+        for block in self.order_processor.blockchain.chain:
+            self.blockchain_tree.insert("", tk.END, values=(
+                block.index, block.timestamp, block.data, block.previous_hash, block.hash
+            ))
+
+    # ----------------------
+    # Fraud Detection Tab
+    # ----------------------
+    def setup_fraud_tab(self):
+        frame = ttk.Frame(self.fraud_tab, padding="10")
+        frame.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(frame, text="Flagged Fraudulent Orders", font=("Helvetica", 14)).pack(pady=10)
+        columns = ("Order ID", "Customer Name", "Date", "Fraud Probability")
+        self.fraud_tree = ttk.Treeview(frame, columns=columns, show='headings')
+        for col in columns:
+            self.fraud_tree.heading(col, text=col)
+            self.fraud_tree.column(col, width=150, anchor=tk.CENTER)
+        self.fraud_tree.pack(fill=tk.BOTH, expand=True)
+        ttk.Button(frame, text="Refresh Fraud Data", command=self.load_fraud_data).pack(pady=5)
+        self.load_fraud_data()
+
+    def load_fraud_data(self):
+        for row in self.fraud_tree.get_children():
+            self.fraud_tree.delete(row)
+        orders = self.order_processor.fetch_flagged_orders()
+        for order in orders:
+            self.fraud_tree.insert("", tk.END, values=order)
+
+    # ----------------------
+    # Reports Tab (Export CSV)
+    # ----------------------
+    def setup_reports_tab(self):
+        frame = ttk.Frame(self.reports_tab, padding="10")
+        frame.pack(fill=tk.BOTH, expand=True)
+        ttk.Button(frame, text="Export Sales Report to CSV", command=self.export_sales_report).pack(pady=10)
+
+    def export_sales_report(self):
+        df = self.order_processor.fetch_all_sales_df()
+        if not df.empty:
+            file_path = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV Files", "*.csv")])
+            if file_path:
+                df.to_csv(file_path, index=False)
+                logging.info(f"Sales report exported to {file_path}")
+                messagebox.showinfo("Export Successful", f"Report saved to {file_path}")
+        else:
+            messagebox.showerror("Error", "No sales data available.")
+
+    # ----------------------
+    # Order Entry Tab
+    # ----------------------
+    def setup_order_tab(self):
+        frame = ttk.Frame(self.order_tab, padding="10")
+        frame.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(frame, text="Customer Name:").grid(row=0, column=0, sticky="w", pady=5)
+        self.customer_name_entry = ttk.Entry(frame)
+        self.customer_name_entry.grid(row=0, column=1, pady=5)
+        ttk.Label(frame, text="Product ID:").grid(row=1, column=0, sticky="w", pady=5)
+        self.product_id_entry = ttk.Entry(frame)
+        self.product_id_entry.grid(row=1, column=1, pady=5)
+        ttk.Label(frame, text="Quantity:").grid(row=2, column=0, sticky="w", pady=5)
+        self.quantity_entry = ttk.Entry(frame)
+        self.quantity_entry.grid(row=2, column=1, pady=5)
+        ttk.Button(frame, text="Submit Order", command=self.submit_order).grid(row=3, column=0, pady=10)
+        ttk.Button(frame, text="Cancel Order", command=self.cancel_order).grid(row=3, column=1, pady=10)
+        # New widgets for updating order status
+        ttk.Label(frame, text="Order ID:").grid(row=4, column=0, sticky="w", pady=5)
+        self.order_id_entry = ttk.Entry(frame)
+        self.order_id_entry.grid(row=4, column=1, pady=5)
+        ttk.Label(frame, text="New Status:").grid(row=5, column=0, sticky="w", pady=5)
+        self.order_status_entry = ttk.Entry(frame)
+        self.order_status_entry.grid(row=5, column=1, pady=5)
+        ttk.Button(frame, text="Update Status", command=self.update_status).grid(row=6, column=0, columnspan=2, pady=5)
+        self.message_label = ttk.Label(frame, text="", foreground="blue")
+        self.message_label.grid(row=7, column=0, columnspan=2, pady=5)
+
+    def submit_order(self):
+        order_details = {
+            "customer_name": self.customer_name_entry.get().strip(),
+            "product_id": self.product_id_entry.get().strip(),
+            "quantity": self.quantity_entry.get().strip()
+        }
+        self.order_processor.add_order(order_details)
+
+    def cancel_order(self):
+        self.customer_name_entry.delete(0, tk.END)
+        self.product_id_entry.delete(0, tk.END)
+        self.quantity_entry.delete(0, tk.END)
+        self.order_status_entry.delete(0, tk.END)
+        self.order_id_entry.delete(0, tk.END)
+        self.message_label.config(text="Order cancelled and fields cleared.")
+
+    def update_status(self):
+        order_id = self.order_id_entry.get().strip()  # Now uses the new widget
+        new_status = self.order_status_entry.get().strip()
+        if order_id and new_status:
+            self.order_processor.update_order_status(order_id, new_status)
+            self.message_label.config(text=f"Order {order_id} updated to {new_status}")
+        else:
+            self.message_label.config(text="Provide Order ID and new status.")
+
+    # ----------------------
+    # Inventory Tab
+    # ----------------------
+    def setup_inventory_tab(self):
+        frame = ttk.Frame(self.inventory_tab, padding="10")
+        frame.pack(fill=tk.BOTH, expand=True)
+        ttk.Button(frame, text="Plot Inventory Levels", command=self.order_processor.plot_inventory_levels).pack(pady=10)
+        ttk.Button(frame, text="Generate Sales Report", command=self.open_sales_report_window).pack(pady=10)
+
+    def open_sales_report_window(self):
+        self.order_processor.generate_sales_report_table(self.master)
+
+    # ----------------------
+    # Email Orders Tab
+    # ----------------------
+    def setup_email_tab(self):
+        frame = ttk.Frame(self.email_tab, padding="10")
+        frame.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(frame, text="Fetch Incoming Orders from Email", font=("Helvetica", 14)).pack(pady=10)
+        ttk.Button(frame, text="Check Email", command=self.fetch_orders_from_inbox).pack(pady=10)
+        self.email_tab_message = ttk.Label(frame, text="")
+        self.email_tab_message.pack(pady=10)
+
+    def fetch_orders_from_inbox(self):
+        new_orders = fetch_incoming_orders_from_email()
+        count = 0
+        for order in new_orders:
+            self.order_processor.add_order(order)
+            count += 1
+        msg = f"{count} new order(s) processed from inbox." if count else "No new orders found."
+        self.email_tab_message.config(text=msg)
+
+    # ----------------------
+    # Admin Tab
+    # ----------------------
+    def setup_admin_tab(self):
+        frame = ttk.Frame(self.admin_tab, padding="10")
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        # Manage Products Section
+        prod_frame = ttk.LabelFrame(frame, text="Manage Products", padding="10")
+        prod_frame.grid(row=0, column=0, sticky="ew", padx=5, pady=5)
+
+        ttk.Label(prod_frame, text="Product ID:").grid(row=0, column=0, sticky="w", pady=2)
+        self.new_product_id_entry = ttk.Entry(prod_frame)
+        self.new_product_id_entry.grid(row=0, column=1, pady=2)
+
+        ttk.Label(prod_frame, text="Product Name:").grid(row=1, column=0, sticky="w", pady=2)
+        self.new_product_name_entry = ttk.Entry(prod_frame)
+        self.new_product_name_entry.grid(row=1, column=1, pady=2)
+
+        ttk.Label(prod_frame, text="Price:").grid(row=2, column=0, sticky="w", pady=2)
+        self.new_product_price_entry = ttk.Entry(prod_frame)
+        self.new_product_price_entry.grid(row=2, column=1, pady=2)
+
+        ttk.Label(prod_frame, text="Stock:").grid(row=3, column=0, sticky="w", pady=2)
+        self.new_product_stock_entry = ttk.Entry(prod_frame)
+        self.new_product_stock_entry.grid(row=3, column=1, pady=2)
+
+        btn_frame = ttk.Frame(prod_frame)
+        btn_frame.grid(row=4, column=0, columnspan=2, pady=5)
+        ttk.Button(btn_frame, text="Add Product", command=self.add_product).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Update Product", command=self.update_product).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Delete Product", command=self.delete_product).pack(side=tk.LEFT, padx=5)
+
+        self.admin_message_label = ttk.Label(frame, text="", foreground="green")
+        self.admin_message_label.grid(row=1, column=0, sticky="w", padx=10, pady=5)
+
+        # Manage Registrations Section
+        reg_frame = ttk.LabelFrame(frame, text="Manage Registrations", padding="10")
+        reg_frame.grid(row=2, column=0, sticky="nsew", padx=5, pady=5)
+        self.registration_listbox = tk.Listbox(reg_frame, height=6)
+        self.registration_listbox.pack(fill=tk.BOTH, expand=True, pady=5)
+        reg_btn_frame = ttk.Frame(reg_frame)
+        reg_btn_frame.pack(pady=5)
+        ttk.Button(reg_btn_frame, text="Approve", command=self.approve_registration).pack(side=tk.LEFT, padx=5)
+        ttk.Button(reg_btn_frame, text="Reject", command=self.reject_registration).pack(side=tk.LEFT, padx=5)
+
+        frame.rowconfigure(2, weight=1)
+        frame.columnconfigure(0, weight=1)
+        self.load_registrations()
+
+    def add_product(self):
+        product_id = self.new_product_id_entry.get().strip()
+        product_name = self.new_product_name_entry.get().strip()
+        price = self.new_product_price_entry.get().strip()
+        stock = self.new_product_stock_entry.get().strip()
+        if not (product_id and product_name and price and stock):
+            self.admin_message_label.config(text="All product fields are required.")
+            return
+        try:
+            price = float(price)
+            stock = int(stock)
+            with sqlite3.connect('order_system.db') as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "INSERT INTO products (product_id, name, price, stock) VALUES (?, ?, ?, ?)",
+                    (product_id, product_name, price, stock)
+                )
+                conn.commit()
+            self.admin_message_label.config(text="Product added successfully.")
+        except sqlite3.IntegrityError:
+            self.admin_message_label.config(text="Product ID already exists.")
+        except Exception as e:
+            self.admin_message_label.config(text=f"Error: {str(e)}")
+
+    def update_product(self):
+        product_id = self.new_product_id_entry.get().strip()
+        product_name = self.new_product_name_entry.get().strip()
+        price = self.new_product_price_entry.get().strip()
+        stock = self.new_product_stock_entry.get().strip()
+        if not (product_id and product_name and price and stock):
+            self.admin_message_label.config(text="All product fields are required.")
+            return
+        try:
+            price = float(price)
+            stock = int(stock)
+            with sqlite3.connect('order_system.db') as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "UPDATE products SET name = ?, price = ?, stock = ? WHERE product_id = ?",
+                    (product_name, price, stock, product_id)
+                )
+                conn.commit()
+            self.admin_message_label.config(text="Product updated successfully.")
+        except Exception as e:
+            self.admin_message_label.config(text=f"Error: {str(e)}")
+
+    def delete_product(self):
+        product_id = self.new_product_id_entry.get().strip()
+        if not product_id:
+            self.admin_message_label.config(text="Product ID is required to delete.")
+            return
+        try:
+            with sqlite3.connect('order_system.db') as conn:
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM products WHERE product_id = ?", (product_id,))
+                conn.commit()
+            self.admin_message_label.config(text="Product deleted successfully.")
+        except Exception as e:
+            self.admin_message_label.config(text=f"Error: {str(e)}")
+
+    def load_registrations(self):
+        try:
+            with sqlite3.connect('order_system.db') as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT registration_id, username FROM user_registrations WHERE status = 'Pending'")
+                regs = cursor.fetchall()
+            self.registration_listbox.delete(0, tk.END)
+            for reg in regs:
+                self.registration_listbox.insert(tk.END, f"{reg[0]}: {reg[1]}")
+        except Exception as e:
+            logging.error(f"Registration load error: {e}")
+
+    def approve_registration(self):
+        selection = self.registration_listbox.curselection()
+        if selection:
+            reg_id = self.registration_listbox.get(selection[0]).split(":")[0]
+            try:
+                with sqlite3.connect('order_system.db') as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT username, password, email, role FROM user_registrations WHERE registration_id = ?", (reg_id,))
+                    user_data = cursor.fetchone()
+                    if user_data:
+                        cursor.execute(
+                            "INSERT INTO users (username, password, role) VALUES (?, ?, ?)",
+                            (user_data[0], user_data[1], user_data[3])
+                        )
+                        cursor.execute("UPDATE user_registrations SET status = 'Approved' WHERE registration_id = ?", (reg_id,))
+                        conn.commit()
+                        self.admin_message_label.config(text="User approved and added.")
+                self.load_registrations()
+            except Exception as e:
+                self.admin_message_label.config(text=f"Error: {str(e)}")
+
+    def reject_registration(self):
+        selection = self.registration_listbox.curselection()
+        if selection:
+            reg_id = self.registration_listbox.get(selection[0]).split(":")[0]
+            try:
+                with sqlite3.connect('order_system.db') as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("UPDATE user_registrations SET status = 'Rejected' WHERE registration_id = ?", (reg_id,))
+                    conn.commit()
+                self.admin_message_label.config(text="User registration rejected.")
+                self.load_registrations()
+            except Exception as e:
+                self.admin_message_label.config(text=f"Error: {str(e)}")
+
+# ------------------------------
+# MAIN BLOCK
+# ------------------------------
 if __name__ == "__main__":
+    print("Database absolute path:", os.path.abspath('order_system.db'))
     init_db()
-    alter_orders_table()  # Add this line to modify the existing orders table
+    alter_orders_table()
     add_initial_products()
     add_initial_users()
+    # Clear all orders and repopulate with 5000 new orders (which will use HVAC products only)
+    # clear_and_populate_orders(num_orders=5000)
+    with sqlite3.connect('order_system.db') as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM orders")
+        count_orders = cursor.fetchone()[0]
+        print("Total orders in the database:", count_orders)
     root = tk.Tk()
+    style = ttk.Style(root)
+    style.theme_use("clam")
     login_app = LoginUI(root)
     root.mainloop()

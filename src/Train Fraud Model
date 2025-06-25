@@ -1,0 +1,167 @@
+
+import os
+import pandas as pd
+import numpy as np
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import roc_auc_score, classification_report
+import joblib
+from datetime import datetime
+import logging
+
+
+
+CSV_FILE = r"C:\Users\LENOVO\Downloads\sales data.csv"
+MODEL_FILE = "fraud_detection_model.pkl"
+
+FRAUD_THRESHOLD = 10000  
+
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
+
+
+def add_simulated_fraud_label(df, threshold=FRAUD_THRESHOLD):
+    """
+    Checks if the DataFrame already has a fraud column (case insensitive).
+    If not, it computes transaction_amount (Price * Quantity) and adds
+    a simulated 'fraud' column such that orders with transaction_amount > threshold 
+    are marked as fraud (1) and others as legitimate (0).
+    """
+    
+    if "transaction_amount" not in df.columns:
+        df["transaction_amount"] = pd.to_numeric(df["Price"], errors='coerce').fillna(0) * pd.to_numeric(df["Quantity"], errors='coerce').fillna(0)
+    if 'fraud' not in df.columns and 'Fraud' not in df.columns:
+        print(f"No fraud column found. Simulating fraud labels using threshold = {threshold}.")
+        df["fraud"] = (df["transaction_amount"] > threshold).astype(int)
+    else:
+       
+        if "Fraud" in df.columns:
+            df["fraud"] = df["Fraud"]
+    return df
+
+
+def load_data(csv_path):
+    """
+    Loads CSV data from the given path and parses the 'Date' column as datetime.
+    """
+    if not os.path.exists(csv_path):
+        raise FileNotFoundError(f"CSV file not found at: {csv_path}")
+    df = pd.read_csv(csv_path, parse_dates=["Date"])
+    print("Data sample:")
+    print(df.head())
+    return df
+
+
+def engineer_features(df):
+    """
+    Renames columns for consistency and computes additional features required for fraud detection.
+    In this training script, the transaction_amount is computed as Price * Quantity.
+    Then, the following aggregated features per customer are computed:
+      - total_customer_spent: Sum of transaction_amount per customer.
+      - total_customer_orders: Count of orders per customer.
+      - avg_transaction_amount: total_customer_spent / total_customer_orders.
+      - order_frequency: Difference in days between the customer's latest and earliest order.
+    """
+    
+    df = df.rename(columns={
+        "Order ID": "order_id",
+        "Customer Name": "customer_name",
+        "Date": "transaction_date",
+        "Product Name": "product_name",
+        "Quantity": "quantity",
+        "Price": "price",
+        "Total Price": "total_price"
+    })
+    
+   
+    df["quantity"] = pd.to_numeric(df["quantity"], errors="coerce").fillna(0).astype(int)
+    df["price"] = pd.to_numeric(df["price"], errors="coerce").fillna(0).astype(float)
+    
+    
+    if "transaction_amount" not in df.columns:
+        df["transaction_amount"] = df["price"] * df["quantity"]
+    
+    df["transaction_date"] = pd.to_datetime(df["transaction_date"], errors="coerce")
+    
+
+    df["total_customer_spent"] = df.groupby("customer_name")["transaction_amount"].transform("sum")
+    df["total_customer_orders"] = df.groupby("customer_name")["order_id"].transform("count")
+    df["avg_transaction_amount"] = df["total_customer_spent"] / df["total_customer_orders"]
+    
+    df["order_frequency"] = df.groupby("customer_name")["transaction_date"].transform(lambda x: (x.max() - x.min()).days)
+    
+    return df
+
+
+def prepare_xy(df):
+    """
+    Defines the feature matrix X and target vector y for training.
+    The features are:
+      - total_customer_spent
+      - total_customer_orders
+      - avg_transaction_amount
+      - order_frequency
+      - transaction_amount
+    The target is 'fraud'.
+    """
+    features = [
+        "total_customer_spent",
+        "total_customer_orders",
+        "avg_transaction_amount",
+        "order_frequency",
+        "transaction_amount"
+    ]
+    target = "fraud"
+    X = df[features].fillna(0)
+    y = df[target].values
+    return X, y
+
+
+def train_fraud_model(X, y):
+    """
+    Splits the data into training and testing sets, trains a RandomForestClassifier,
+    prints the ROC AUC score and classification report, and returns the trained model.
+    """
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    
+    clf = RandomForestClassifier(n_estimators=100, random_state=42)
+    clf.fit(X_train, y_train)
+    
+    y_pred = clf.predict(X_test)
+    y_pred_proba = clf.predict_proba(X_test)[:, 1]
+    
+    auc_score = roc_auc_score(y_test, y_pred_proba)
+    print("ROC AUC Score:", auc_score)
+    print("Classification Report:")
+    print(classification_report(y_test, y_pred))
+    
+    return clf
+
+
+def save_model(model, filename=MODEL_FILE):
+    """
+    Saves the trained model to disk using joblib.
+    """
+    joblib.dump(model, filename)
+    print(f"Fraud detection model saved to {filename}")
+
+def main():
+  
+    df = load_data(CSV_FILE)
+    
+   
+    df = add_simulated_fraud_label(df, threshold=FRAUD_THRESHOLD)
+    
+   
+    df = engineer_features(df)
+    
+  
+    X, y = prepare_xy(df)
+    
+    model = train_fraud_model(X, y)
+    
+    
+    save_model(model)
+
+if __name__ == "__main__":
+    main()
